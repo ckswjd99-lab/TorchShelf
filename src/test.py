@@ -9,23 +9,22 @@ import torchvision.transforms as transforms
 
 from torch.utils.tensorboard import SummaryWriter
 
-import torchvision.models as models
-
 from tqdm import tqdm
 import os
 
 from shelf.utils import adjust_learning_rate, train, validate
-from shelf.dataloaders import get_CIFAR10_dataset
+from shelf.dataloaders import get_CIFAR100_dataset
+from shelf.models.resnet import ResNet50, ResNet101
 
 # hyperparameters
-EPOCHS = 200
+EPOCHS = 10
 BATCH_SIZE = 128
 LEARNING_RATE = 0.1
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
-PRETRAIN_EPOCH = 50
-TRANSFER_EPOCH = 5
+PRETRAIN_EPOCH = 5
+TRANSFER_EPOCH = 2
 
 DEVICE = 'cuda'
 MODEL_SAVE_DIR = './save'
@@ -37,15 +36,15 @@ if not os.path.exists(MODEL_SAVE_DIR):
     os.mkdir(MODEL_SAVE_DIR)
 
 # load dataset
-train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
+train_loader, val_loader = get_CIFAR100_dataset(batch_size=BATCH_SIZE)
 
 
 print('========== From Scratch: ResNet50 ==========')
 writer_resnet50_fs = SummaryWriter()
 
 # model, criterion, optimizer
-model_resnet50 = models.resnet50(weights=None)
-model_resnet50.fc = nn.Linear(2048, 10)
+model_resnet50 = ResNet50(input_size=32, num_output=100)
+model_resnet50.fc = nn.Linear(2048, 100)
 model_resnet50 = model_resnet50.cuda()
 
 criterion_resnet50 = nn.CrossEntropyLoss()
@@ -99,8 +98,8 @@ print('========== From Scratch: ResNet101 ==========')
 writer_resnet101_fs = SummaryWriter()
 
 # model, criterion, optimizer
-model_resnet101 = models.resnet101(weights=None)
-model_resnet101.fc = nn.Linear(2048, 10)
+model_resnet101 = ResNet101(input_size=32, num_output=100)
+model_resnet101.fc = nn.Linear(2048, 100)
 model_resnet101 = model_resnet101.cuda()
 
 criterion_resnet101 = nn.CrossEntropyLoss()
@@ -150,9 +149,9 @@ print('========== reKD: ResNet50 -> ResNet101 ==========')
 writer_cell_division = SummaryWriter()
 
 # model
-model_resnet50_pt = models.resnet50(weights=None).cuda()
+model_resnet50_pt = ResNet50(input_size=32, num_output=100).cuda()
 model_resnet50.load_state_dict(torch.load(MODEL_PATH_RESNET50_PT))
-model_resnet101 = models.resnet101(weights=None).cuda()
+model_resnet101 = ResNet101(input_size=32, num_output=100).cuda()
 
 # copy weights
 model_resnet101.conv1 = model_resnet50.conv1
