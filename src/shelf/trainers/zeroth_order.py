@@ -3,7 +3,7 @@ from tqdm import tqdm
 import numpy as np
 
 
-def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7, weight_decay=5e-4, epsilon=1e-3, verbose=True):
+def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7, weight_decay=5e-4, epsilon=1e-3, verbose=True, momentum=1.0):
     model.eval()
 
     num_data = 0
@@ -12,6 +12,11 @@ def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7
 
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
     max_grad = 0
+
+    momentum_buffer = {}
+    for name, param in model.named_parameters():
+        momentum_buffer[name] = torch.zeros_like(param.data)
+
     for input, label in pbar:
         input = input.cuda()
         label = label.cuda()
@@ -30,7 +35,7 @@ def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7
 
         projected_gradient = (loss1 - loss2) / (2 * epsilon)
 
-        _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay)
+        momentum_buffer = _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum)
 
         output = model(input)
         loss = criterion(output, label)
@@ -58,13 +63,18 @@ def _zo_perturb(model, perturb_seed, scaling_factor=1.0):
         z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
         param.data += z * scaling_factor
 
-def _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay):
+def _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum):
     torch.manual_seed(perturb_seed)
 
     for name, param in model.named_parameters():
         z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+        estimated_gradient = projected_gradient * z
+        momentum_buffer[name] = momentum * momentum_buffer[name] + (momentum) * estimated_gradient
+
         if "bias" not in name and "layer_norm" not in name and "layernorm" not in name:
-            param.data = param.data - learning_rate * (projected_gradient * z + weight_decay * param.data)
+            param.data = param.data - learning_rate * (estimated_gradient + weight_decay * param.data)
         else:
-            param.data = param.data - learning_rate * (projected_gradient * z)
+            param.data = param.data - learning_rate * (estimated_gradient)
+        
+    return momentum_buffer
         

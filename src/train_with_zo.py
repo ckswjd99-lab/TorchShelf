@@ -14,8 +14,8 @@ class MyModel(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(28 * 28, 20),
             nn.ReLU(),
-            nn.Linear(20, 20),
-            nn.ReLU(),
+            # nn.Linear(20, 20),
+            # nn.ReLU(),
             nn.Linear(20, 10)
         )
         
@@ -34,14 +34,14 @@ class MyModel(nn.Module):
 # hyperparameters
 ModelClass = MyModel
 
-EPOCHS_PRETRAIN = 1
+EPOCHS_PRETRAIN = 5
 LR_PRETRAIN = 1e-3
 
 EPOCHS = 200
 BATCH_SIZE = 512
 LR_PERTURB = 5e-3
 PERTURB_EPS = 1e-3
-MOMENTUM = 0.9
+MOMENTUM = 0.95
 WEIGHT_DECAY = 5e-4
 
 NUM_CLASSES = 10
@@ -65,7 +65,7 @@ train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
 print(f'========== Pretrain with E2EBP: {ModelClass.__name__} ==========')
 
 for epoch in range(EPOCHS_PRETRAIN):
-    epoch_lr = adjust_learning_rate(optimizer, LR_PRETRAIN, epoch, 2, 0.2 ** (1/10), minimum_lr=0.0)
+    epoch_lr = adjust_learning_rate(optimizer, LR_PRETRAIN, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0)
 
     # train for one epoch
     train_acc, train_loss = train(train_loader, model_vgg, criterion, optimizer, epoch)
@@ -104,7 +104,7 @@ for epoch in range(EPOCHS_PRETRAIN, EPOCHS):
         epoch_lr = LR_PERTURB * 0.25
 
     # train for one epoch
-    train_acc, train_loss = train_zeroth_order(train_loader, model_vgg, criterion, epoch, learning_rate=epoch_lr, weight_decay=WEIGHT_DECAY, epsilon=PERTURB_EPS)
+    train_acc, train_loss = train_zeroth_order(train_loader, model_vgg, criterion, epoch, learning_rate=epoch_lr, weight_decay=WEIGHT_DECAY, epsilon=PERTURB_EPS, momentum=MOMENTUM)
 
     # evaluate on validation set
     val_acc, val_loss = validate(val_loader, model_vgg, criterion, epoch)
