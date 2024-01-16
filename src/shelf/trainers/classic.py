@@ -5,8 +5,9 @@ from tqdm import tqdm
 def adjust_learning_rate(optimizer, lr_init, epoch, epoch_freq=30, decay_rate=0.5, minimum_lr=1e-5):
     """Sets the learning rate to the initial LR decayed by 2 every 30 epochs"""
     lr = max(lr_init * (decay_rate ** (epoch // epoch_freq)), minimum_lr)
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+    if optimizer is not None:
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = lr
     
     return lr
 
