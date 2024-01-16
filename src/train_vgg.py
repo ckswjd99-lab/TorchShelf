@@ -1,5 +1,5 @@
 from shelf.models.vgg import VGG11, VGG11_bn, VGG13, VGG13_bn, VGG16, VGG16_bn, VGG19, VGG19_bn
-from shelf.utils import adjust_learning_rate, train, validate
+from shelf.trainers import adjust_learning_rate, train, validate
 from shelf.dataloaders import get_CIFAR100_dataset
 
 import torch

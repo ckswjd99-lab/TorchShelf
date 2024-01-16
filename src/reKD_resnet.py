@@ -12,19 +12,19 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import os
 
-from shelf.utils import adjust_learning_rate, train, validate
+from shelf.trainers import adjust_learning_rate, train, validate
 from shelf.dataloaders import get_CIFAR100_dataset
 from shelf.models.resnet import ResNet50, ResNet101
 
 # hyperparameters
-EPOCHS = 10
+EPOCHS = 200
 BATCH_SIZE = 128
 LEARNING_RATE = 0.1
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
-PRETRAIN_EPOCH = 5
-TRANSFER_EPOCH = 2
+PRETRAIN_EPOCH = 50
+TRANSFER_EPOCH = 5
 
 DEVICE = 'cuda'
 MODEL_SAVE_DIR = './save'
@@ -173,7 +173,7 @@ optimizer_resnet101 = torch.optim.SGD(submodule_resnet101.parameters(), LEARNING
 
 transfer_epoch = 5
 for epoch in range(PRETRAIN_EPOCH, PRETRAIN_EPOCH + TRANSFER_EPOCH):
-    epoch_lr = adjust_learning_rate(optimizer_resnet50, LEARNING_RATE, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0008)
+    epoch_lr = adjust_learning_rate(submodule_resnet101, LEARNING_RATE, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0008)
 
     # train for one epoch
     submodule_resnet101.train()

@@ -1,5 +1,5 @@
 from shelf.models.resnet import ResNet18, ResNet34, ResNet50, ResNet101, ResNet152
-from shelf.utils import adjust_learning_rate, train, validate
+from shelf.trainers import adjust_learning_rate, train, validate
 from shelf.dataloaders import get_CIFAR100_dataset
 
 import torch
