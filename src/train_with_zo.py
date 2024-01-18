@@ -1,5 +1,7 @@
 from shelf.trainers import adjust_learning_rate, train, train_zeroth_order, validate
-from shelf.dataloaders import get_MNIST_dataset
+# from shelf.dataloaders import get_MNIST_dataset
+from shelf.dataloaders import get_CIFAR10_dataset
+from shelf.models.vgg import VGG6_custom
 
 import torch
 import torch.nn as nn
@@ -32,16 +34,17 @@ class MyModel(nn.Module):
 
 
 # hyperparameters
-ModelClass = MyModel
+# ModelClass = MyModel
+ModelClass = VGG6_custom
 
-EPOCHS_PRETRAIN = 5
-LR_PRETRAIN = 1e-3
+EPOCHS_PRETRAIN = 10
+LR_PRETRAIN = 0.05
 
-EPOCHS = 200
-BATCH_SIZE = 512
-LR_PERTURB = 5e-3
+EPOCHS = 2000
+BATCH_SIZE = 128
+LR_PERTURB = 1e-5
 PERTURB_EPS = 1e-3
-MOMENTUM = 0.95
+MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
 NUM_CLASSES = 10
@@ -49,7 +52,8 @@ NUM_CLASSES = 10
 DEVICE = 'cuda'
 
 # model, criterion, optimizer
-model_vgg = ModelClass()
+# model_vgg = ModelClass()
+model_vgg = ModelClass(input_size=28, num_output=NUM_CLASSES)
 model_vgg = model_vgg.cuda()
 
 criterion = nn.CrossEntropyLoss()
@@ -58,14 +62,15 @@ optimizer = torch.optim.SGD(model_vgg.parameters(), LR_PRETRAIN, momentum=MOMENT
 best_val_acc = 0
 
 # load dataset
-train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
+# train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
+train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
 
 
 # pretrain
 print(f'========== Pretrain with E2EBP: {ModelClass.__name__} ==========')
 
 for epoch in range(EPOCHS_PRETRAIN):
-    epoch_lr = adjust_learning_rate(optimizer, LR_PRETRAIN, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0)
+    epoch_lr = adjust_learning_rate(optimizer, LR_PRETRAIN, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0008)
 
     # train for one epoch
     train_acc, train_loss = train(train_loader, model_vgg, criterion, optimizer, epoch)
@@ -96,12 +101,7 @@ print(f'========== Train with ZO: {ModelClass.__name__} ==========')
 
 for epoch in range(EPOCHS_PRETRAIN, EPOCHS):
     # epoch_lr = adjust_learning_rate(None, LR_PERTURB, epoch, 70, 0.5, minimum_lr=1e-4)
-    if epoch in range(0, 70):
-        epoch_lr = LR_PERTURB
-    elif epoch in range(70, 140):
-        epoch_lr = LR_PERTURB * 0.5
-    else:
-        epoch_lr = LR_PERTURB * 0.25
+    epoch_lr = LR_PERTURB
 
     # train for one epoch
     train_acc, train_loss = train_zeroth_order(train_loader, model_vgg, criterion, epoch, learning_rate=epoch_lr, weight_decay=WEIGHT_DECAY, epsilon=PERTURB_EPS, momentum=MOMENTUM)
