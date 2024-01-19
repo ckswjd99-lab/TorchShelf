@@ -4,6 +4,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn.utils.prune as prune
 
+from import_shelf import shelf
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
 from shelf.trainers import train, validate, adjust_learning_rate
 from shelf.models.vgg import VGG6_custom

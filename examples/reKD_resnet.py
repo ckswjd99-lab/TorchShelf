@@ -12,6 +12,7 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import os
 
+from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, validate
 from shelf.dataloaders import get_CIFAR100_dataset
 from shelf.models.resnet import ResNet50, ResNet101

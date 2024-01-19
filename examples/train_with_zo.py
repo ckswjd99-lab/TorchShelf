@@ -1,3 +1,4 @@
+from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, train_zeroth_order, validate
 # from shelf.dataloaders import get_MNIST_dataset
 from shelf.dataloaders import get_CIFAR10_dataset
