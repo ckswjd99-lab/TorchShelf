@@ -3,7 +3,7 @@ from tqdm import tqdm
 import numpy as np
 
 
-def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7, weight_decay=5e-4, epsilon=1e-3, verbose=True, momentum=1.0):
+def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7, weight_decay=5e-4, epsilon=1e-3, verbose=True, momentum=1.0, one_way=False):
     model.eval()
 
     num_data = 0
@@ -35,7 +35,7 @@ def train_zeroth_order(train_loader, model, criterion, epoch, learning_rate=1e-7
 
         projected_gradient = (loss1 - loss2) / (2 * epsilon)
 
-        momentum_buffer = _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum)
+        momentum_buffer = _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum, one_way=one_way)
 
         output = model(input)
         loss = criterion(output, label)
@@ -63,8 +63,11 @@ def _zo_perturb(model, perturb_seed, scaling_factor=1.0):
         z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
         param.data += z * scaling_factor
 
-def _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum):
+def _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_decay, momentum_buffer, momentum, one_way=False):
     torch.manual_seed(perturb_seed)
+
+    if one_way:
+        projected_gradient = max(0, projected_gradient)
 
     for name, param in model.named_parameters():
         z = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
@@ -77,4 +80,4 @@ def _zo_update(model, perturb_seed, projected_gradient, learning_rate, weight_de
             param.data = param.data - learning_rate * (estimated_gradient)
         
     return momentum_buffer
-        
+

@@ -1,7 +1,7 @@
 from shelf.trainers import adjust_learning_rate, train, train_zeroth_order, validate
 # from shelf.dataloaders import get_MNIST_dataset
 from shelf.dataloaders import get_CIFAR10_dataset
-from shelf.models.vgg import VGG6_custom
+from shelf.models.resnet import ResNet34
 
 import torch
 import torch.nn as nn
@@ -10,34 +10,12 @@ import torch.utils.data
 
 import torchvision.models as models
 
-class MyModel(nn.Module):
-    def __init__(self):
-        super(MyModel, self).__init__()
-        self.classifier = nn.Sequential(
-            nn.Linear(28 * 28, 20),
-            nn.ReLU(),
-            # nn.Linear(20, 20),
-            # nn.ReLU(),
-            nn.Linear(20, 10)
-        )
-        
-        # initialize weights
-        for m in self.modules():
-            if isinstance(m, nn.Linear):
-                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
-
-
-    def forward(self, x):
-        x = x.view(x.size(0), -1)
-        x = self.classifier(x)
-        return x
-
 
 # hyperparameters
 # ModelClass = MyModel
-ModelClass = VGG6_custom
+ModelClass = ResNet34
 
-EPOCHS_PRETRAIN = 10
+EPOCHS_PRETRAIN = 1
 LR_PRETRAIN = 0.05
 
 EPOCHS = 2000
@@ -53,7 +31,7 @@ DEVICE = 'cuda'
 
 # model, criterion, optimizer
 # model_vgg = ModelClass()
-model_vgg = ModelClass(input_size=28, num_output=NUM_CLASSES)
+model_vgg = ModelClass(input_size=32, num_output=NUM_CLASSES)
 model_vgg = model_vgg.cuda()
 
 criterion = nn.CrossEntropyLoss()
