@@ -1,8 +1,6 @@
 from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, train_zeroth_order, validate
-# from shelf.dataloaders import get_MNIST_dataset
-from shelf.dataloaders import get_CIFAR10_dataset
-from shelf.models.resnet import ResNet34
+from shelf.dataloaders import get_MNIST_dataset
 
 import torch
 import torch.nn as nn
@@ -12,16 +10,36 @@ import torch.utils.data
 import torchvision.models as models
 
 
-# hyperparameters
-# ModelClass = MyModel
-ModelClass = ResNet34
+class MyModel(nn.Module):
+    def __init__(self, input_size=28, input_channel=1, num_output=10):
+        super(MyModel, self).__init__()
+        self.input_size = input_size
+        self.input_channel = input_channel
+        self.num_output = num_output
+        self.features = nn.Sequential(
+            nn.Flatten(),
+            nn.Linear(input_size * input_size * input_channel, 64),
+            nn.ReLU(inplace=True),
+            nn.Linear(64, 16),
+            nn.ReLU(inplace=True),
+            nn.Linear(16, num_output)
+        )
 
-EPOCHS_PRETRAIN = 1
+    
+    def forward(self, x):
+        x = self.features(x)
+        return x
+
+
+# hyperparameters
+ModelClass = MyModel
+
+EPOCHS_PRETRAIN = 0
 LR_PRETRAIN = 0.05
 
-EPOCHS = 2000
+EPOCHS = 50
 BATCH_SIZE = 128
-LR_PERTURB = 1e-5
+LR_PERTURB = 1e-3
 PERTURB_EPS = 1e-3
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
@@ -32,8 +50,10 @@ DEVICE = 'cuda'
 
 # model, criterion, optimizer
 # model_vgg = ModelClass()
-model_vgg = ModelClass(input_size=32, num_output=NUM_CLASSES)
+model_vgg = ModelClass(input_size=28, input_channel=1, num_output=NUM_CLASSES)
 model_vgg = model_vgg.cuda()
+num_params = sum(p.numel() for p in model_vgg.parameters() if p.requires_grad)
+print(f'>> Number of parameters: {num_params}')
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.SGD(model_vgg.parameters(), LR_PRETRAIN, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
@@ -41,8 +61,7 @@ optimizer = torch.optim.SGD(model_vgg.parameters(), LR_PRETRAIN, momentum=MOMENT
 best_val_acc = 0
 
 # load dataset
-# train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
-train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
+train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
 
 
 # pretrain
