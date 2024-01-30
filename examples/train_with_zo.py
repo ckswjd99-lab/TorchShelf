@@ -1,13 +1,11 @@
 from import_shelf import shelf
-from shelf.trainers import adjust_learning_rate, train, train_zeroth_order, validate
-from shelf.dataloaders import get_MNIST_dataset
+from shelf.trainers import adjust_learning_rate, train, train_zo_rge, train_zo_cge, validate
+from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
 
 import torch
 import torch.nn as nn
 import torch.optim
 import torch.utils.data
-
-import torchvision.models as models
 
 
 class MyModel(nn.Module):
@@ -17,95 +15,87 @@ class MyModel(nn.Module):
         self.input_channel = input_channel
         self.num_output = num_output
         self.features = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(input_size * input_size * input_channel, 64),
+            nn.Conv2d(self.input_channel, 4, kernel_size=3, padding=1),
+            nn.BatchNorm2d(4),
             nn.ReLU(inplace=True),
-            nn.Linear(64, 16),
-            nn.ReLU(inplace=True),
-            nn.Linear(16, num_output)
+            nn.MaxPool2d(kernel_size=2, stride=2),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(4 * (self.input_size // 2) * (self.input_size // 2), self.num_output)
         )
 
     
     def forward(self, x):
         x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
         return x
 
 
 # hyperparameters
 ModelClass = MyModel
 
-EPOCHS_PRETRAIN = 0
-LR_PRETRAIN = 0.05
-
 EPOCHS = 50
 BATCH_SIZE = 128
-LR_PERTURB = 1e-3
-PERTURB_EPS = 1e-3
-MOMENTUM = 0.9
+LEARNING_RATE = 0.01
+SMOOTHING = 5e-3
+MOMENTUM = 0.0
+DAMPENING = 0
 WEIGHT_DECAY = 5e-4
+NESTEROV = False
+NUM_QUERY = 192
 
 NUM_CLASSES = 10
 
 DEVICE = 'cuda'
 
 # model, criterion, optimizer
-# model_vgg = ModelClass()
-model_vgg = ModelClass(input_size=28, input_channel=1, num_output=NUM_CLASSES)
+# model_vgg = ModelClass(input_size=28, input_channel=1, num_output=NUM_CLASSES)
+model_vgg = ModelClass(input_size=32, input_channel=3, num_output=NUM_CLASSES)
 model_vgg = model_vgg.cuda()
 num_params = sum(p.numel() for p in model_vgg.parameters() if p.requires_grad)
+print(model_vgg)
 print(f'>> Number of parameters: {num_params}')
 
+print('Hyperparameters:')
+print(f'>> EPOCHS: {EPOCHS}')
+print(f'>> BATCH_SIZE: {BATCH_SIZE}')
+print(f'>> LEARNING_RATE: {LEARNING_RATE}')
+print(f'>> SMOOTHING: {SMOOTHING}')
+print(f'>> MOMENTUM: {MOMENTUM}')
+print(f'>> DAMPENING: {DAMPENING}')
+print(f'>> WEIGHT_DECAY: {WEIGHT_DECAY}')
+print(f'>> NESTEROV: {NESTEROV}')
+print(f'>> NUM_QUERY: {NUM_QUERY}')
+print(f'>> NUM_CLASSES: {NUM_CLASSES}')
+print(f'>> DEVICE: {DEVICE}')
+
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.SGD(model_vgg.parameters(), LR_PRETRAIN, momentum=MOMENTUM, weight_decay=WEIGHT_DECAY)
+optimizer = torch.optim.SGD(model_vgg.parameters(), LEARNING_RATE, momentum=MOMENTUM, dampening=DAMPENING, weight_decay=WEIGHT_DECAY, nesterov=NESTEROV)
+# optimizer = torch.optim.Adam(model_vgg.parameters(), LR_PERTURB, weight_decay=WEIGHT_DECAY)
+
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
 
 best_val_acc = 0
 
 # load dataset
-train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
-
-
-# pretrain
-print(f'========== Pretrain with E2EBP: {ModelClass.__name__} ==========')
-
-for epoch in range(EPOCHS_PRETRAIN):
-    epoch_lr = adjust_learning_rate(optimizer, LR_PRETRAIN, epoch, 5, 0.2 ** (1/10), minimum_lr=0.0008)
-
-    # train for one epoch
-    train_acc, train_loss = train(train_loader, model_vgg, criterion, optimizer, epoch)
-
-    # evaluate on validation set
-    val_acc, val_loss = validate(val_loader, model_vgg, criterion, epoch)
-
-    # print training/validation statistics
-    print(
-        'Epoch: {0}/{1}\t'
-        'LR: {lr:.6f}\t'
-        'Train Accuracy {train_acc:.3f}\t'
-        'Train Loss {train_loss:.3f}\t'
-        'Val Accuracy {val_acc:.3f}\t'
-        'Val Loss {val_loss:.3f}'
-        .format(
-            epoch + 1, EPOCHS, lr=epoch_lr, train_acc=train_acc, train_loss=train_loss, val_acc=val_acc, val_loss=val_loss
-        )
-    )
-
-    # record best validation accuracy
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
+# train_loader, val_loader = get_MNIST_dataset(batch_size=BATCH_SIZE)
+train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
 
 
 print(f'========== Train with ZO: {ModelClass.__name__} ==========')
 
-
-for epoch in range(EPOCHS_PRETRAIN, EPOCHS):
-    # epoch_lr = adjust_learning_rate(None, LR_PERTURB, epoch, 70, 0.5, minimum_lr=1e-4)
-    epoch_lr = LR_PERTURB
+for epoch in range(EPOCHS):
+    epoch_lr = scheduler.get_last_lr()[0]
 
     # train for one epoch
-    train_acc, train_loss = train_zeroth_order(train_loader, model_vgg, criterion, epoch, learning_rate=epoch_lr, weight_decay=WEIGHT_DECAY, epsilon=PERTURB_EPS, momentum=MOMENTUM)
+    train_acc, train_loss = train_zo_rge(train_loader, model_vgg, criterion, optimizer, epoch, smoothing=SMOOTHING, query=NUM_QUERY)
 
     # evaluate on validation set
     val_acc, val_loss = validate(val_loader, model_vgg, criterion, epoch)
+
+    # step scheduler
+    scheduler.step()
 
     # print training/validation statistics
     print(
@@ -127,3 +117,41 @@ for epoch in range(EPOCHS_PRETRAIN, EPOCHS):
 # result
 print(f'>> Best Validation Accuracy {best_val_acc:.3f}')
 print('')
+
+
+print(f'========== Train with FO: {ModelClass.__name__} ==========')
+
+POST_EPOCH = 0
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=POST_EPOCH, eta_min=1e-5)
+
+for epoch in range(POST_EPOCH):
+    epoch_lr = scheduler.get_last_lr()[0]
+
+    # train for one epoch
+    train_acc, train_loss = train(train_loader, model_vgg, criterion, optimizer, epoch)
+
+    # evaluate on validation set
+    val_acc, val_loss = validate(val_loader, model_vgg, criterion, epoch)
+
+    # step scheduler
+    scheduler.step()
+
+    # print training/validation statistics
+    print(
+        'Epoch: {0}/{1}\t'
+        'LR: {lr:.6f}\t'
+        'Train Accuracy {train_acc:.3f}\t'
+        'Train Loss {train_loss:.3f}\t'
+        'Val Accuracy {val_acc:.3f}\t'
+        'Val Loss {val_loss:.3f}'
+        .format(
+            epoch + 1, POST_EPOCH, lr=epoch_lr, train_acc=train_acc, train_loss=train_loss, val_acc=val_acc, val_loss=val_loss
+        )
+    )
+
+    # record best validation accuracy
+    if val_acc > best_val_acc:
+        best_val_acc = val_acc
+
+# result
+print(f'>> Best Validation Accuracy {best_val_acc:.3f}')
