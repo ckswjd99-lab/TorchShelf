@@ -1,6 +1,7 @@
 from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, train_zo_rge, train_zo_cge, validate
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
+from shelf.mutators import mutate_linear_kaiming, mutate_conv2d_kaiming, mutate_batchnorm2d_identity
 
 import torch
 import torch.nn as nn
@@ -14,15 +15,20 @@ class MyModel(nn.Module):
         self.input_size = input_size
         self.input_channel = input_channel
         self.num_output = num_output
+
+        self.inter_feature = 4
+
         self.features = nn.Sequential(
-            nn.Conv2d(self.input_channel, 4, kernel_size=3, padding=1),
-            nn.BatchNorm2d(4),
+            nn.Conv2d(self.input_channel, self.inter_feature, kernel_size=3, padding=1),
+            nn.BatchNorm2d(self.inter_feature),
             nn.ReLU(inplace=True),
             nn.MaxPool2d(kernel_size=2, stride=2),
         )
         self.classifier = nn.Sequential(
-            nn.Linear(4 * (self.input_size // 2) * (self.input_size // 2), self.num_output)
+            nn.Linear(self.inter_feature * (self.input_size // 2) * (self.input_size // 2), self.num_output)
         )
+
+        self.growth = 0
 
     
     def forward(self, x):
@@ -30,6 +36,16 @@ class MyModel(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+    
+    def grow(self):
+        self.growth += 1
+        self.features[0] = mutate_conv2d_kaiming(self.features[0], self.input_channel, self.inter_feature + 1 * self.growth)
+        self.features[1] = mutate_batchnorm2d_identity(self.features[1], self.inter_feature + 1 * self.growth)
+        self.classifier[0] = mutate_linear_kaiming(
+            self.classifier[0], 
+            (self.inter_feature + 1 * self.growth) * (self.input_size // 2) * (self.input_size // 2), 
+            self.num_output
+        )
 
 
 # hyperparameters
@@ -113,6 +129,20 @@ for epoch in range(EPOCHS):
     # record best validation accuracy
     if val_acc > best_val_acc:
         best_val_acc = val_acc
+
+    if epoch % 5 == 4:    
+        model_vgg.grow()
+        model_vgg = model_vgg.cuda()
+
+        optimizer = torch.optim.SGD(model_vgg.parameters(), LEARNING_RATE, momentum=MOMENTUM, dampening=DAMPENING, weight_decay=WEIGHT_DECAY, nesterov=NESTEROV)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+        for _ in range(epoch + 1):
+            scheduler.step()
+
+        num_params = sum(p.numel() for p in model_vgg.parameters() if p.requires_grad)
+        print(f'grown to {num_params} parameters')
+
+    
 
 # result
 print(f'>> Best Validation Accuracy {best_val_acc:.3f}')
