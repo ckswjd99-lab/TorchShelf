@@ -12,8 +12,9 @@ import torch.utils.data
 
 EPOCHS = 50
 BATCH_SIZE = 128
-LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 0.1
+LEARNING_RATE = 1e-3
+WEIGHT_DECAY = 0.03
+DROPOUT = 0.1
 
 NUM_CLASSES = 10
 
@@ -28,7 +29,7 @@ train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
 print(f'========== From Scratch: ViT ==========')
 
 # model, criterion, optimizer
-model = VisionTransformer(image_size=32, patch_size=4, num_classes=NUM_CLASSES, dim=768, depth=12, heads=12, mlp_dim=768*4, dropout=0.0)
+model = VisionTransformer(image_size=32, patch_size=4, num_classes=NUM_CLASSES, dim=768, depth=12, heads=12, mlp_dim=768*4, dropout=DROPOUT)
 model = model.cuda()
 
 num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)

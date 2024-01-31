@@ -1,7 +1,7 @@
 from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, train_zo_rge, train_zo_cge, validate
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
-from shelf.mutators import mutate_linear_kaiming, mutate_conv2d_kaiming, mutate_batchnorm2d_identity
+from shelf.models.mutable import mutate_linear_kaiming, mutate_conv2d_kaiming, mutate_batchnorm2d_identity
 
 import torch
 import torch.nn as nn
