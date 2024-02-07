@@ -62,3 +62,20 @@ def mutate_batchnorm2d_identity(module_bn2d, num_channel):
 
     return new_bn2d.to(module_bn2d.weight.data.device)
 
+
+def mutate_linearnorm_identity(module_ln, num_channel):
+    if isinstance(module_ln, nn.LayerNorm) is False:
+        raise TypeError('The module must be a layer normalization layer.')
+
+    new_ln = nn.LayerNorm(num_channel, eps=module_ln.eps, elementwise_affine=module_ln.elementwise_affine)
+
+    new_ln.weight.data = torch.ones_like(new_ln.weight.data)
+    new_ln.bias.data = torch.zeros_like(new_ln.bias.data)
+
+    new_ln.weight.data[:module_ln.weight.shape[0]] = module_ln.weight.data.to(new_ln.weight.data.device)
+    new_ln.bias.data[:module_ln.bias.shape[0]] = module_ln.bias.data.to(new_ln.bias.data.device)
+
+    new_ln.weight.data = new_ln.weight.data.to(module_ln.weight.data.device)
+    new_ln.bias.data = new_ln.bias.data.to(module_ln.bias.data.device)
+
+    return new_ln.to(module_ln.weight.data.device)
