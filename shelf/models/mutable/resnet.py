@@ -4,6 +4,9 @@ import torch.nn.functional as F
 
 from .mutator import mutate_linear_kaiming, mutate_conv2d_kaiming, mutate_batchnorm2d_identity
 
+def shrinken_dim(total_dim, shrink_ratio):
+    return max(int(total_dim * shrink_ratio), 1)
+
 class MutableBasicBlock(nn.Module):
     expansion = 1
 
@@ -118,31 +121,31 @@ class MutableResNet18(nn.Module):
         self.shrink_ratio = shrink_ratio
 
         # input: Tensor[batch_size, input_channel, input_size[0], input_size[1]]
-        self.conv1 = nn.Conv2d(self.input_channel, int(64 * shrink_ratio), kernel_size=7, stride=2, padding=3, bias=False)
-        self.bn1 = nn.BatchNorm2d(int(64 * shrink_ratio))
+        self.conv1 = nn.Conv2d(self.input_channel, shrinken_dim(64, shrink_ratio), kernel_size=7, stride=2, padding=3, bias=False)
+        self.bn1 = nn.BatchNorm2d(shrinken_dim(64, shrink_ratio))
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
 
         self.layer1 = nn.Sequential(
-            MutableBasicBlock(int(64 * shrink_ratio), int(64 * shrink_ratio)),
-            MutableBasicBlock(int(64 * shrink_ratio), int(64 * shrink_ratio))
+            MutableBasicBlock(shrinken_dim(64, shrink_ratio), shrinken_dim(64, shrink_ratio)),
+            MutableBasicBlock(shrinken_dim(64, shrink_ratio), shrinken_dim(64, shrink_ratio))
         )
         self.layer2 = nn.Sequential(
-            MutableBasicBlock(int(64 * shrink_ratio), int(128 * shrink_ratio), stride=2),
-            MutableBasicBlock(int(128 * shrink_ratio), int(128 * shrink_ratio))
+            MutableBasicBlock(shrinken_dim(64, shrink_ratio), shrinken_dim(128, shrink_ratio), stride=2),
+            MutableBasicBlock(shrinken_dim(128, shrink_ratio), shrinken_dim(128, shrink_ratio))
         )
         self.layer3 = nn.Sequential(
-            MutableBasicBlock(int(128 * shrink_ratio), int(256 * shrink_ratio), stride=2),
-            MutableBasicBlock(int(256 * shrink_ratio), int(256 * shrink_ratio))
+            MutableBasicBlock(shrinken_dim(128, shrink_ratio), shrinken_dim(256, shrink_ratio), stride=2),
+            MutableBasicBlock(shrinken_dim(256, shrink_ratio), shrinken_dim(256, shrink_ratio))
         )
         self.layer4 = nn.Sequential(
-            MutableBasicBlock(int(256 * shrink_ratio), int(512 * shrink_ratio), stride=2),
-            MutableBasicBlock(int(512 * shrink_ratio), int(512 * shrink_ratio))
+            MutableBasicBlock(shrinken_dim(256, shrink_ratio), shrinken_dim(512, shrink_ratio), stride=2),
+            MutableBasicBlock(shrinken_dim(512, shrink_ratio), shrinken_dim(512, shrink_ratio))
         )
 
         # input: Tensor[batch_size, 512, input_size[0] // 32, input_size[1] // 32]
         self.avgpool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(int(512 * shrink_ratio) * self.input_size[0] // 32 * self.input_size[1] // 32, self.num_output)
+        self.fc = nn.Linear(shrinken_dim(512, shrink_ratio) * self.input_size[0] // 32 * self.input_size[1] // 32, self.num_output)
 
     def forward(self, x):
         x = self.conv1(x)
@@ -168,24 +171,24 @@ class MutableResNet18(nn.Module):
         
         self.shrink_ratio = shrink_ratio
 
-        self.conv1 = mutate_conv2d_kaiming(self.conv1, self.input_channel, int(64 * shrink_ratio))
-        self.bn1 = mutate_batchnorm2d_identity(self.bn1, int(64 * shrink_ratio))
+        self.conv1 = mutate_conv2d_kaiming(self.conv1, self.input_channel, shrinken_dim(64, shrink_ratio))
+        self.bn1 = mutate_batchnorm2d_identity(self.bn1, shrinken_dim(64, shrink_ratio))
 
-        self.layer1[0].grow_tobe(int(64 * shrink_ratio), int(64 * shrink_ratio))
-        self.layer1[1].grow_tobe(int(64 * shrink_ratio), int(64 * shrink_ratio))
+        self.layer1[0].grow_tobe(shrinken_dim(64, shrink_ratio), shrinken_dim(64, shrink_ratio))
+        self.layer1[1].grow_tobe(shrinken_dim(64, shrink_ratio), shrinken_dim(64, shrink_ratio))
 
-        self.layer2[0].grow_tobe(int(64 * shrink_ratio), int(128 * shrink_ratio))
-        self.layer2[1].grow_tobe(int(128 * shrink_ratio), int(128 * shrink_ratio))
+        self.layer2[0].grow_tobe(shrinken_dim(64, shrink_ratio), shrinken_dim(128, shrink_ratio))
+        self.layer2[1].grow_tobe(shrinken_dim(128, shrink_ratio), shrinken_dim(128, shrink_ratio))
 
-        self.layer3[0].grow_tobe(int(128 * shrink_ratio), int(256 * shrink_ratio))
-        self.layer3[1].grow_tobe(int(256 * shrink_ratio), int(256 * shrink_ratio))
+        self.layer3[0].grow_tobe(shrinken_dim(128, shrink_ratio), shrinken_dim(256, shrink_ratio))
+        self.layer3[1].grow_tobe(shrinken_dim(256, shrink_ratio), shrinken_dim(256, shrink_ratio))
 
-        self.layer4[0].grow_tobe(int(256 * shrink_ratio), int(512 * shrink_ratio))
-        self.layer4[1].grow_tobe(int(512 * shrink_ratio), int(512 * shrink_ratio))
+        self.layer4[0].grow_tobe(shrinken_dim(256, shrink_ratio), shrinken_dim(512, shrink_ratio))
+        self.layer4[1].grow_tobe(shrinken_dim(512, shrink_ratio), shrinken_dim(512, shrink_ratio))
 
         self.fc = mutate_linear_kaiming(
             self.fc, 
-            int(512 * self.shrink_ratio) * self.input_size[0] // 32 * self.input_size[1] // 32, 
+            shrinken_dim(512, self.shrink_ratio) * self.input_size[0] // 32 * self.input_size[1] // 32, 
             self.num_output
         )
 
