@@ -118,7 +118,10 @@ def train_zo_rge(train_loader, model, criterion, optimizer, epoch, smoothing=1e-
     return accuracy, avg_loss
 
 
-def train_zo_rge_autolr(train_loader, model, criterion, optimizer, epoch, smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, one_way=False, config=None):
+def train_zo_rge_autolr(
+        train_loader, model, criterion, optimizer, epoch, 
+        smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, clip_loss_diff=1e99, one_way=False, config=None
+    ):
     model.eval()
 
     num_data = 0
@@ -140,7 +143,7 @@ def train_zo_rge_autolr(train_loader, model, criterion, optimizer, epoch, smooth
         input = input.cuda()
         label = label.cuda()
 
-        estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing, one_way=one_way)
+        estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff)
         if config is not None:
             real_gradient = gradient_fo(input, label, model, criterion)
             
@@ -247,7 +250,7 @@ def train_zo_cge(train_loader, model, criterion, optimizer, epoch, smoothing=1e-
 
 
 @torch.no_grad()
-def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing=1e-3, one_way=False):
+def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing=1e-3, one_way=False, clip_loss_diff=1e99):
     averaged_gradient = {}
     loss_original = criterion(model(input), label)
 
@@ -267,7 +270,9 @@ def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing
         for name, param in model.named_parameters():
             param.data -= estimated_gradient[name] * smoothing
 
-        loss_difference = (loss_perturbed - loss_original) / smoothing
+        loss_difference = min(loss_perturbed - loss_original, clip_loss_diff) / smoothing
+
+
         if one_way and loss_difference > 0:
             query -= 1
             continue
