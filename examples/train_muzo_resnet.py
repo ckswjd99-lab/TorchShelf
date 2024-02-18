@@ -9,6 +9,9 @@ import torch.optim
 import torch.utils.data
 
 import numpy as np
+import math
+import os
+import time
 
 
 # hyperparameters
@@ -17,15 +20,15 @@ ModelClass = MutableResNet18
 EPOCHS = 50000
 BATCH_SIZE = 128
 LEARNING_RATE = 'auto'
-LR_MAX = 5e-2
-LR_CONFIDENCE = 0.1
+LR_CONFIDENCE = 1.0
+LR_MAX = 2e-1
 SMOOTHING = 5e-3
 MOMENTUM = 0.0
-DAMPENING = 0
+DAMPENING = 0.0
 WEIGHT_DECAY = 5e-4
 NESTEROV = False
 
-QUERY_RATIO = 0.02
+QUERY_RATIO = 0.5
 QUERY_GROWTH = 1.0
 
 HYPARAM_UPDATE_FREQ = 200
@@ -60,8 +63,8 @@ print('Hyperparameters:')
 print(f'>> EPOCHS: {EPOCHS}')
 print(f'>> BATCH_SIZE: {BATCH_SIZE}')
 print(f'>> LEARNING_RATE: {LEARNING_RATE}')
-print(f'>> LR_MAX: {LR_MAX}')
 print(f'>> LR_CONFIDENCE: {LR_CONFIDENCE}')
+print(f'>> LR_MAX: {LR_MAX}')
 print(f'>> SMOOTHING: {SMOOTHING}')
 print(f'>> MOMENTUM: {MOMENTUM}')
 print(f'>> DAMPENING: {DAMPENING}')
@@ -98,6 +101,8 @@ for now_growth in range(8, TOTAL_GROWTH):
     now_num_query = int(num_params * QUERY_RATIO)
     print(f'>> Query: {now_num_query}')
 
+    now_confience = LR_CONFIDENCE
+
     optimizer = torch.optim.SGD(model_resnet.parameters(), 1e-3, momentum=MOMENTUM, dampening=DAMPENING, weight_decay=WEIGHT_DECAY, nesterov=NESTEROV)
 
     print(f'>> Growth: {now_growth}/{TOTAL_GROWTH} ({num_params} parameters)')
@@ -111,10 +116,12 @@ for now_growth in range(8, TOTAL_GROWTH):
     epoch = 1
     run = True
     while best_val_acc < target_acc and run:
+        start_time = time.time()
+
         train_config = {}
         train_acc, train_loss = train_zo_rge_autolr(
             train_loader, model_resnet, criterion, optimizer, epoch-1, 
-            max_lr=LR_MAX, smoothing=SMOOTHING, query=now_num_query, confidence=LR_CONFIDENCE,
+            max_lr=LR_MAX, smoothing=SMOOTHING, query=now_num_query, confidence=now_confience, clip_loss_diff=1e-1,
             config=train_config
         )
 
@@ -131,11 +138,16 @@ for now_growth in range(8, TOTAL_GROWTH):
 
         logstring = 'Epoch: {0}\t' \
                     'LR: {lr:.6f}±{lr_std:.6f}\t' \
+                    'Confidence: {confidence:.6f}\t' \
                     'Train Accuracy {train_acc:.3f}\t' \
                     'Train Loss {train_loss:.3f}\t' \
                     'Val Accuracy {val_acc:.3f}\t' \
-                    'Val Loss {val_loss:.3f}'.format(
-            epoch, lr=now_lr_avg, lr_std=now_lr_std, train_acc=train_acc, train_loss=train_loss, val_acc=val_acc, val_loss=val_loss
+                    'Val Loss {val_loss:.3f}\t' \
+                    'Time Elap {time:.3f}'.format(
+            epoch, 
+            lr=now_lr_avg, lr_std=now_lr_std, confidence=now_confience, 
+            train_acc=train_acc, train_loss=train_loss, val_acc=val_acc, val_loss=val_loss,
+            time=time.time() - start_time
         )
 
 
@@ -157,6 +169,9 @@ for now_growth in range(8, TOTAL_GROWTH):
     print(f'>> Reached Accuracy: {best_val_acc:.3f}')
     log.append(f'>> Reached Accuracy: {best_val_acc:.3f}')
 
+    if not os.path.exists('./saves/train_muzo_resnet'):
+        os.makedirs('./saves/train_muzo_resnet')
+
     torch.save(
         {
             'model': model_resnet.state_dict(),
@@ -166,7 +181,7 @@ for now_growth in range(8, TOTAL_GROWTH):
             'now_growth': now_growth,
             'log': log,
         },
-        f'./saves/train_muzo_resnet_9_acc{best_val_acc*100:.2f}_loss{best_val_loss:.3f}_growth{now_growth}.pth'
+        f'./saves/train_muzo_resnet/acc{best_val_acc*100:.2f}_loss{best_val_loss:.3f}_growth{now_growth}.pth'
     )
 
 
