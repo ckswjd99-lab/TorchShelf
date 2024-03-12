@@ -73,7 +73,7 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None
 
 def train_dist_zo(
     train_loader, model, criterion, optimizer, epoch,
-    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge',
+    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge', batch_scatter=False,
     config=None, verbose=True
 ):
     model.eval()
@@ -103,9 +103,16 @@ def train_dist_zo(
             estimated_gradient = gradient_estimate_paramwise(input, label, model, criterion, query=query, smoothing=smoothing)
         
         # all-reduce gradient
-        for name, grad in estimated_gradient.items():
-            dist.all_reduce(grad, op=dist.ReduceOp.SUM)
-            grad /= dist.get_world_size()
+        if not batch_scatter:
+            for name, grad in estimated_gradient.items():
+                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+                grad /= dist.get_world_size()
+        else:
+            for name, grad in estimated_gradient.items():
+                mask = torch.randint(0, dist.get_world_size(), grad.size()).cuda() == dist.get_rank()
+                grad = grad[mask]
+                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+            
             
         # estimate learning rate
         if lr_auto:
