@@ -1,5 +1,5 @@
 from import_shelf import shelf
-from shelf.trainers import adjust_learning_rate, train, train_zo_rge, train_zo_rge_autolr, train_zo_cge, validate
+from shelf.trainers import adjust_learning_rate, train, train_zo_rge, train_zo_paramwise_autolr, train_zo_cge, validate
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
 from shelf.models.mutable import MutableResNet18
 
@@ -13,6 +13,7 @@ import math
 import os
 import time
 
+os.environ["CUDA_VISIBLE_DEVICES"]="MIG-60fed909-9539-55f4-9bab-e99df995d4a0"
 
 # hyperparameters
 ModelClass = MutableResNet18
@@ -22,13 +23,13 @@ BATCH_SIZE = 128
 LEARNING_RATE = 'auto'
 LR_CONFIDENCE = 1.0
 LR_MAX = 2e-1
-SMOOTHING = 5e-3
+SMOOTHING = 1e-3
 MOMENTUM = 0.0
 DAMPENING = 0.0
 WEIGHT_DECAY = 5e-4
 NESTEROV = False
 
-QUERY_RATIO = 0.5
+QUERY_RATIO = 0.03
 QUERY_GROWTH = 1.0
 
 HYPARAM_UPDATE_FREQ = 200
@@ -119,9 +120,9 @@ for now_growth in range(8, TOTAL_GROWTH):
         start_time = time.time()
 
         train_config = {}
-        train_acc, train_loss = train_zo_rge_autolr(
+        train_acc, train_loss = train_zo_paramwise_autolr(
             train_loader, model_resnet, criterion, optimizer, epoch-1, 
-            max_lr=LR_MAX, smoothing=SMOOTHING, query=now_num_query, confidence=now_confience, clip_loss_diff=1e-1,
+            max_lr=LR_MAX, smoothing=SMOOTHING, query=now_num_query, confidence=now_confience,
             config=train_config
         )
 

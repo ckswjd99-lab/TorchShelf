@@ -102,7 +102,10 @@ def train_dist_zo_rge_autolr(
         if sync_model is not None:
             sync_model.wait()
 
-        estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=num_query_per_process, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff)
+        estimated_gradient = gradient_estimate_randvec(
+            input, label, model, criterion, 
+            query=num_query_per_process, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff
+        )
 
         reduced_estimated_gradient = {}
         for name, param in model.named_parameters():

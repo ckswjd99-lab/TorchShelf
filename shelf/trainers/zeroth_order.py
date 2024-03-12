@@ -1,47 +1,57 @@
 import torch
+import torch.nn.utils.prune as prune
 from tqdm import tqdm
 import numpy as np
 import math
 
-
-def train_fo_autolr(train_loader, model, criterion, optimizer, epoch, smoothing=1e-3, max_lr=1e-2, verbose=True, confidence=0.1, config=None):
+def train_zo(
+    train_loader, model, criterion, optimizer, epoch,
+    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge',
+    config=None, verbose=True
+):
     model.eval()
-
+    
     num_data = 0
     num_correct = 0
     sum_loss = 0
-
+    
     lr_history = []
     avg_lr = 0
-    estim_precision = 0
-    estim_cos_sim = 0
 
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
+    
     for input, label in pbar:
         input = input.cuda()
         label = label.cuda()
 
-        estimated_gradient = gradient_fo(input, label, model, criterion)
-        lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
-
-        lr = abs(lr.item()) * confidence
-        lr = min(lr, max_lr)
-
-        optimizer.zero_grad()
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
+        # estimate gradient
+        if ge_type == 'rge':
+            estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing)
+        elif ge_type == 'cge':
+            estimated_gradient = gradient_estimate_coordwise(input, label, model, criterion, smoothing=smoothing)
+        elif ge_type == 'paramwise':
+            estimated_gradient = gradient_estimate_paramwise(input, label, model, criterion, query=query, smoothing=smoothing)
+            
+        # estimate learning rate
+        if lr_auto:
+            lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
+            lr = abs(lr.item()) if lr != 0 else lr_min
+            lr = min(max(lr, lr_min), lr_max)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            for param_group in optimizer.param_groups:
+                lr = min(max(lr, lr_min), lr_max)
+                param_group['lr'] = lr
+                
         lr_history.append(lr)
         avg_lr += lr
+
+        optimizer.zero_grad()
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                param.grad = estimated_gradient[name]
+        optimizer.step()
 
         output = model(input)
         loss = criterion(output, label)
@@ -59,327 +69,13 @@ def train_fo_autolr(train_loader, model, criterion, optimizer, epoch, smoothing=
         
     accuracy = num_correct / num_data
     avg_loss = sum_loss / num_data
-
+    
     avg_lr /= len(train_loader)
     std_lr = np.std(lr_history)
-    estim_precision /= len(train_loader)
-    estim_cos_sim /= len(train_loader)
 
     if config is not None:
         config['avg_lr'] = avg_lr
         config['std_lr'] = std_lr
-        config['estim_precision'] = estim_precision
-        config['estim_cos_sim'] = estim_cos_sim
-
-    return accuracy, avg_loss
-
-
-def train_zo_rge(train_loader, model, criterion, optimizer, epoch, smoothing=1e-3, query=1, verbose=True, one_way=False):
-    model.eval()
-
-    num_data = 0
-    num_correct = 0
-    sum_loss = 0
-
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
-    for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
-
-        estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing, one_way=one_way)
-
-        optimizer.zero_grad()
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
-        output = model(input)
-        loss = criterion(output, label)
-
-        _, predicted = torch.max(output.data, 1)
-        num_data += label.size(0)
-        num_correct += (predicted == label).sum().item()
-        sum_loss += loss.item() * label.size(0)
-    
-        accuracy = num_correct / num_data
-        avg_loss = sum_loss / num_data
-
-        if verbose:
-            pbar.set_postfix(train_accuracy=accuracy, train_loss=avg_loss)
-        
-    accuracy = num_correct / num_data
-    avg_loss = sum_loss / num_data
-
-    return accuracy, avg_loss
-
-
-def train_zo_rge_autolr(
-        train_loader, model, criterion, optimizer, epoch, 
-        smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, clip_loss_diff=1e99, one_way=False, config=None
-    ):
-    model.eval()
-
-    num_data = 0
-    num_correct = 0
-    sum_loss = 0
-
-    lr_history = []
-    avg_lr = 0
-    # estim_precision = 0
-    # estim_cos_sim = 0
-
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
-    for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
-
-        estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff)
-
-        lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
-
-        lr = abs(lr.item()) * confidence
-        lr = min(lr, max_lr)
-
-        optimizer.zero_grad()
-        # set learning rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        lr_history.append(lr)
-        avg_lr += lr
-
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
-        output = model(input)
-        loss = criterion(output, label)
-
-        _, predicted = torch.max(output.data, 1)
-        num_data += label.size(0)
-        num_correct += (predicted == label).sum().item()
-        sum_loss += loss.item() * label.size(0)
-    
-        accuracy = num_correct / num_data
-        avg_loss = sum_loss / num_data
-
-        if verbose:
-            pbar.set_postfix(train_accuracy=accuracy, train_loss=avg_loss)
-        
-    accuracy = num_correct / num_data
-    avg_loss = sum_loss / num_data
-
-    avg_lr /= len(train_loader)
-    std_lr = np.std(lr_history)
-    # estim_precision /= len(train_loader)
-    # estim_cos_sim /= len(train_loader)
-
-    if config is not None:
-        config['avg_lr'] = avg_lr
-        config['std_lr'] = std_lr
-        # config['estim_precision'] = estim_precision
-        # config['estim_cos_sim'] = estim_cos_sim
-
-    return accuracy, avg_loss
-
-
-def train_zo_paramwise_autolr(
-        train_loader, model, criterion, optimizer, epoch, 
-        smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, clip_loss_diff=1e99, one_way=False, config=None
-    ):
-    model.eval()
-
-    num_data = 0
-    num_correct = 0
-    sum_loss = 0
-
-    lr_history = []
-    avg_lr = 0
-    # estim_precision = 0
-    # estim_cos_sim = 0
-
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
-    for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
-
-        estimated_gradient = gradient_estimate_paramwise(input, label, model, criterion, query=query, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff)
-
-        lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
-
-        lr = abs(lr.item()) * confidence
-        lr = min(lr, max_lr)
-
-        optimizer.zero_grad()
-        # set learning rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        lr_history.append(lr)
-        avg_lr += lr
-
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
-        output = model(input)
-        loss = criterion(output, label)
-
-        _, predicted = torch.max(output.data, 1)
-        num_data += label.size(0)
-        num_correct += (predicted == label).sum().item()
-        sum_loss += loss.item() * label.size(0)
-    
-        accuracy = num_correct / num_data
-        avg_loss = sum_loss / num_data
-
-        if verbose:
-            pbar.set_postfix(train_accuracy=accuracy, train_loss=avg_loss)
-        
-    accuracy = num_correct / num_data
-    avg_loss = sum_loss / num_data
-
-    avg_lr /= len(train_loader)
-    std_lr = np.std(lr_history)
-    # estim_precision /= len(train_loader)
-    # estim_cos_sim /= len(train_loader)
-
-    if config is not None:
-        config['avg_lr'] = avg_lr
-        config['std_lr'] = std_lr
-        # config['estim_precision'] = estim_precision
-        # config['estim_cos_sim'] = estim_cos_sim
-
-    return accuracy, avg_loss
-
-
-def train_zo_rge_ha(
-        train_loader, model, criterion, optimizer, epoch, 
-        smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, clip_loss_diff=1e99, one_way=False, config=None
-    ):
-    model.eval()
-
-    num_data = 0
-    num_correct = 0
-    sum_loss = 0
-
-    lr_history = []
-    avg_lr = 0
-    estim_precision = 0
-    estim_cos_sim = 0
-
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
-    for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
-
-        estimated_gradient = gradient_estimate_randvec_ha(
-            input, label, model, criterion, 
-            query=query, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff, max_lr=max_lr
-        )
-        lr = 1
-
-        optimizer.zero_grad()
-        # set learning rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
-        lr_history.append(lr)
-        avg_lr += lr
-
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
-        output = model(input)
-        loss = criterion(output, label)
-
-        _, predicted = torch.max(output.data, 1)
-        num_data += label.size(0)
-        num_correct += (predicted == label).sum().item()
-        sum_loss += loss.item() * label.size(0)
-    
-        accuracy = num_correct / num_data
-        avg_loss = sum_loss / num_data
-
-        if verbose:
-            pbar.set_postfix(train_accuracy=accuracy, train_loss=avg_loss)
-        
-    accuracy = num_correct / num_data
-    avg_loss = sum_loss / num_data
-
-    avg_lr /= len(train_loader)
-    std_lr = np.std(lr_history)
-    estim_precision /= len(train_loader)
-    estim_cos_sim /= len(train_loader)
-
-    if config is not None:
-        config['avg_lr'] = avg_lr
-        config['std_lr'] = std_lr
-        config['estim_precision'] = estim_precision
-        config['estim_cos_sim'] = estim_cos_sim
-
-    return accuracy, avg_loss
-
-
-def train_zo_cge(train_loader, model, criterion, optimizer, epoch, smoothing=1e-3, verbose=True):
-    model.eval()
-
-    num_data = 0
-    num_correct = 0
-    sum_loss = 0
-
-    pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-    max_grad = 0
-
-    momentum_buffer = {}
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
-    for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
-
-        estimated_gradient = gradient_estimate_coordwise(input, label, model, criterion, smoothing=smoothing)
-
-        optimizer.zero_grad()
-        for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
-        optimizer.step()
-
-        output = model(input)
-        loss = criterion(output, label)
-
-        _, predicted = torch.max(output.data, 1)
-        num_data += label.size(0)
-        num_correct += (predicted == label).sum().item()
-        sum_loss += loss.item() * label.size(0)
-    
-        accuracy = num_correct / num_data
-        avg_loss = sum_loss / num_data
-
-        if verbose:
-            pbar.set_postfix(train_accuracy=accuracy, train_loss=avg_loss)
-        
-    accuracy = num_correct / num_data
-    avg_loss = sum_loss / num_data
 
     return accuracy, avg_loss
 
@@ -388,27 +84,38 @@ def train_zo_cge(train_loader, model, criterion, optimizer, epoch, smoothing=1e-
 def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing=1e-3, one_way=False, clip_loss_diff=1e99):
     averaged_gradient = {}
     loss_original = criterion(model(input), label)
+    
+    state_dict = model.state_dict()
 
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         averaged_gradient[name] = torch.zeros_like(param.data)
 
-    for _ in range(query):
+    for q in range(query):
         estimated_gradient = {}
 
 
         for name, param in model.named_parameters():
+            if not param.requires_grad: continue
+        
             estimated_gradient[name] = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+            if 'weight_orig' in name:
+                mask = state_dict[name.replace('_orig', '_mask')]
+                estimated_gradient[name] *= mask
             param.data += estimated_gradient[name] * smoothing
 
         loss_perturbed = criterion(model(input), label)
 
         for name, param in model.named_parameters():
+            if not param.requires_grad: continue
+        
             param.data -= estimated_gradient[name] * smoothing
 
         loss_difference = min(loss_perturbed - loss_original, clip_loss_diff) / smoothing
 
         if math.isnan(loss_difference.item()):
-            print('NaN detected!!')
+            print('NaN detected!!', q)
             print(f'loss_diff: {loss_difference}')
             print(f'0, +: {loss_original.item()}, {loss_perturbed.item()}')
             continue
@@ -433,13 +140,27 @@ def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing
 def gradient_estimate_paramwise(input, label, model, criterion, query=1, smoothing=1e-3, one_way=False, clip_loss_diff=1e99):
     averaged_gradient = {}
     loss_original = criterion(model(input), label)
+    
+    state_dict = model.state_dict()
 
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         averaged_gradient[name] = torch.zeros_like(param.data)
 
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
+        mask = None
+        if 'weight_orig' in name:
+            mask = state_dict[name.replace('_orig', '_mask')]
+        
         for _ in range(query):
             gaussian_noise = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
+            
+            if mask is not None:
+                gaussian_noise *= mask
+            
             param.data += gaussian_noise * smoothing
 
             loss_perturbed = criterion(model(input), label)
@@ -458,78 +179,29 @@ def gradient_estimate_paramwise(input, label, model, criterion, query=1, smoothi
 
 
 @torch.no_grad()
-def gradient_estimate_randvec_ha(input, label, model, criterion, max_lr=1e-2, query=1, smoothing=1e-3, one_way=False, clip_loss_diff=1e99):
-    averaged_gradient = {}
-    loss_original = criterion(model(input), label)
-
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-
-    smoothing /= num_params
-
-    for name, param in model.named_parameters():
-        averaged_gradient[name] = torch.zeros_like(param.data)
-
-    for _ in range(query):
-        estimated_gradient = {}
-
-        for name, param in model.named_parameters():
-            estimated_gradient[name] = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype) / num_params
-            if torch.isnan(estimated_gradient[name]).any():
-                print('NaN detected!!')
-                print(f'Estimated gradient: {estimated_gradient[name]}')
-                query -= 1
-                continue
-            param.data += estimated_gradient[name] * smoothing
-
-        loss_perturbed_pos = criterion(model(input), label)
-
-        for name, param in model.named_parameters():
-            param.data -= 2 * estimated_gradient[name] * smoothing
-
-        loss_perturbed_neg = criterion(model(input), label)
-
-        for name, param in model.named_parameters():
-            param.data += estimated_gradient[name] * smoothing
-
-        Jz = (loss_perturbed_pos - loss_original) / smoothing
-        zHz = (loss_perturbed_pos + loss_perturbed_neg - 2 * loss_original) / (smoothing ** 2)
-        if zHz < 0:
-            query -= 1
-            continue
-        
-        if math.isnan(Jz.item()) or math.isnan(zHz.item()):
-            print('NaN detected!!')
-            print(f'Jz, zHz: {Jz.item()}, {zHz.item()}')
-            print(f'0, +, -: {loss_original.item()}, {loss_perturbed_pos.item()}, {loss_perturbed_neg.item()}')
-            query -= 1
-            continue
-
-        step_size = Jz / (zHz + 1e-4)
-
-        for name, param in model.named_parameters():
-            averaged_gradient[name] += step_size * estimated_gradient[name]
-
-    if query == 0:
-        return averaged_gradient
-    
-    for param_name in averaged_gradient.keys():
-        averaged_gradient[param_name] /= query
-    
-    return averaged_gradient
-
-
-@torch.no_grad()
 def gradient_estimate_coordwise(input, label, model, criterion, smoothing):
     averaged_gradient = {}
     loss_original = criterion(model(input), label)
+    
+    state_dict = model.state_dict()
 
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         averaged_gradient[name] = torch.zeros_like(param.data)
 
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
+        mask = None
+        
         estimated_gradient = torch.zeros_like(param.data)
-
+        if 'weight_orig' in name:
+            mask = state_dict[name.replace('_orig', '_mask')]
+        
         for i in range(param.data.numel()):
+            if mask is not None and mask.view(-1)[i] == 0: continue
+            
             param.data.view(-1)[i] += smoothing
             loss_perturbed = criterion(model(input), label)
             param.data.view(-1)[i] -= smoothing
@@ -566,11 +238,15 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
 
     # perturb in positive direction
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         param.data += estimated_gradient[name] * smoothing
     loss_perturbed_pos = criterion(model(input), label)
 
     # perturb in negative direction
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         param.data -= 2 * estimated_gradient[name] * smoothing
     loss_perturbed_neg = criterion(model(input), label)
 
@@ -583,6 +259,8 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
 
     # restore the original parameters
     for name, param in model.named_parameters():
+        if not param.requires_grad: continue
+        
         param.data += estimated_gradient[name] * smoothing
     
     # estimate Jz
