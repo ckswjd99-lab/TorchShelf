@@ -1,7 +1,7 @@
 from import_shelf import shelf
 from shelf.trainers import adjust_learning_rate, train, validate, train_dist
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset, get_CIFAR10_dataset_dist
-from shelf.models.resnet import ResNet152
+from shelf.models.transformer import VisionTransformer
 
 import torch
 import torch.nn as nn
@@ -12,6 +12,8 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import os
+os.environ["CUDA_VISIBLE_DEVICES"]="MIG-60fed909-9539-55f4-9bab-e99df995d4a0"
+
 
 
 def print_root(msg):
@@ -22,94 +24,69 @@ def print_rank(msg):
     print(f'Rank {dist.get_rank()}: {msg}')
 
 
-class MyModel(nn.Module):
-    def __init__(self, input_size=28, input_channel=1, num_output=10):
-        super(MyModel, self).__init__()
-        self.input_size = input_size
-        self.input_channel = input_channel
-        self.num_output = num_output
-        self.features = nn.Sequential(
-            nn.Conv2d(self.input_channel, 4, kernel_size=3, padding=1),
-            nn.BatchNorm2d(4),
-            nn.ReLU(inplace=True),
-            nn.MaxPool2d(kernel_size=2, stride=2),
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(4 * (self.input_size // 2) * (self.input_size // 2), self.num_output)
-        )
-
-    
-    def forward(self, x):
-        x = self.features(x)
-        x = torch.flatten(x, 1)
-        x = self.classifier(x)
-        return x
-
-
 # hyperparameters
-ModelClass = MyModel
+EPOCHS = 200
+BATCH_SIZE = 512
+LEARNING_RATE = 1e-4
 
-EPOCHS = 50
-BATCH_SIZE = 128
-LEARNING_RATE = 0.01
-SMOOTHING = 5e-3
-MOMENTUM = 0.0
-DAMPENING = 0
-WEIGHT_DECAY = 5e-4
-NESTEROV = False
+IMAGE_SIZE = 32
+PATCH_SIZE = 4
+DIM_HIDDEN = 512
+DEPTH = 4
+NUM_HEADS = 6
+DIM_MLP = 256
+DROPOUT = 0.1
+EMB_DROPOUT = 0.1
 
 NUM_CLASSES = 10
 
-DEVICE = 'cuda'
-NUM_PROCESS = 8
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+NUM_WORKERS = 4
+PATH_MODEL = './saves/train_dist/model.pth'
 
 # model, criterion, optimizer
 
-print('Hyperparameters:')
-print(f'>> EPOCHS: {EPOCHS}')
-print(f'>> BATCH_SIZE: {BATCH_SIZE}')
-print(f'>> LEARNING_RATE: {LEARNING_RATE}')
-print(f'>> SMOOTHING: {SMOOTHING}')
-print(f'>> MOMENTUM: {MOMENTUM}')
-print(f'>> DAMPENING: {DAMPENING}')
-print(f'>> WEIGHT_DECAY: {WEIGHT_DECAY}')
-print(f'>> NESTEROV: {NESTEROV}')
-print(f'>> NUM_CLASSES: {NUM_CLASSES}')
-print(f'>> DEVICE: {DEVICE}')
-print(f'>> NUM_WORKERS: {NUM_PROCESS}')
-
 
 def run(rank, size):
-    model = ModelClass(input_size=32, input_channel=3, num_output=NUM_CLASSES)
+    model = VisionTransformer(
+        image_size=IMAGE_SIZE,
+        patch_size=PATCH_SIZE,
+        num_classes=NUM_CLASSES,
+        dim=DIM_HIDDEN,
+        depth=DEPTH,
+        heads=NUM_HEADS,
+        mlp_dim=DIM_MLP,
+        dropout=DROPOUT,
+        emb_dropout=EMB_DROPOUT
+    )
     model = model.cuda()
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print_root(model)
     print_root(f'>> Number of parameters: {num_params}')
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), LEARNING_RATE, momentum=MOMENTUM, dampening=DAMPENING, weight_decay=WEIGHT_DECAY, nesterov=NESTEROV)
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), LEARNING_RATE)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
 
     best_val_acc = 0
 
     # load dataset
-    _, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
-    train_loader, _ = get_CIFAR10_dataset_dist(batch_size=BATCH_SIZE, num_process=NUM_PROCESS)
+    train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
 
 
-    print_root(f'========== Train with FO: {ModelClass.__name__} ==========')
-
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS, eta_min=1e-5)
+    print_root(f'========== Train with FO: {VisionTransformer.__name__} ==========')
 
     for epoch in range(EPOCHS):
+        for param in model.parameters():
+            dist.broadcast(param.data, 0)
+        
         epoch_lr = scheduler.get_last_lr()[0]
 
         # train for one epoch
         train_acc, train_loss = train_dist(train_loader, model, criterion, optimizer, epoch)
 
         # evaluate on validation set
-        val_acc, val_loss = validate(val_loader, model, criterion, epoch)
+        val_acc, val_loss = validate(val_loader, model, criterion, epoch, verbose=(rank == 0))
 
         # step scheduler
         scheduler.step()
@@ -144,13 +121,38 @@ def init_process(rank, size, fn, backend='gloo'):
     
 
 if __name__ == '__main__':
-    size = NUM_PROCESS
+    
+    print('Hyperparameters:')
+    print(f'>> EPOCHS: {EPOCHS}')
+    print(f'>> BATCH_SIZE: {BATCH_SIZE}')
+    print(f'>> LEARNING_RATE: {LEARNING_RATE}')
+    print(f'>> IMAGE_SIZE: {IMAGE_SIZE}')
+    print(f'>> PATCH_SIZE: {PATCH_SIZE}')
+    print(f'>> DIM_HIDDEN: {DIM_HIDDEN}')
+    print(f'>> DEPTH: {DEPTH}')
+    print(f'>> NUM_HEADS: {NUM_HEADS}')
+    print(f'>> DIM_MLP: {DIM_MLP}')
+    print(f'>> DROPOUT: {DROPOUT}')
+    print(f'>> EMB_DROPOUT: {EMB_DROPOUT}')
+    print(f'>> NUM_CLASSES: {NUM_CLASSES}')
+    print(f'>> DEVICE: {DEVICE}')
+    print(f'>> NUM_WORKERS: {NUM_WORKERS}')
+    print(f'>> PATH_MODEL: {PATH_MODEL}')
+    
+    size = NUM_WORKERS
+    
+    processes = []
+    
+    mp.set_start_method("spawn")
+    
     for rank in range(size):
         p = mp.Process(target=init_process, args=(rank, size, run))
         p.start()
+        processes.append(p)
         print(f'Process {rank} started')
 
     for rank in range(size):
+        p = processes[rank]
         p.join()
         print(f'Process {rank} joined')
     

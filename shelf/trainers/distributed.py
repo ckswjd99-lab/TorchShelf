@@ -10,6 +10,7 @@ import time
 
 def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None, verbose=True):
     rank = dist.get_rank()
+    size = dist.get_world_size()
     
     model.train()
 
@@ -21,8 +22,12 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None
 
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
     for input, label in pbar:
-        input = input.cuda()
-        label = label.cuda()
+        batch_size = input.size(0)
+        batch_worker_from = batch_size * rank // size
+        batch_worker_to = batch_size * (rank + 1) // size
+        
+        input = input[batch_worker_from:batch_worker_to].cuda()
+        label = label[batch_worker_from:batch_worker_to].cuda()
 
         output = model(input)
         loss = criterion(output, label)
@@ -36,9 +41,6 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None
                 param.grad.data /= dist.get_world_size()
 
         optimizer.step()
-
-        for param in model.parameters():
-            dist.broadcast(param.data, 0)
 
         _, predicted = torch.max(output.data, 1)
         num_data += label.size(0)
