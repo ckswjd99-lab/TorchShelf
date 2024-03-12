@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 
-def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None, verbose=True):
+def train_dist(train_loader, model, criterion, optimizer, epoch, batch_scatter=False, epoch_pbar=None, verbose=True):
     rank = dist.get_rank()
     size = dist.get_world_size()
     
@@ -40,8 +40,13 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None
 
         for param in model.parameters():
             if param.grad is not None:
-                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                param.grad.data /= dist.get_world_size()
+                if batch_scatter == False:
+                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                    param.grad.data /= dist.get_world_size()
+                else:
+                    mask = torch.randint(0, dist.get_world_size(), param.grad.size()).cuda() == dist.get_rank()
+                    param.grad.data *= mask
+                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
 
         optimizer.step()
 
@@ -110,7 +115,7 @@ def train_dist_zo(
         else:
             for name, grad in estimated_gradient.items():
                 mask = torch.randint(0, dist.get_world_size(), grad.size()).cuda() == dist.get_rank()
-                grad = grad[mask]
+                grad *= mask
                 dist.all_reduce(grad, op=dist.ReduceOp.SUM)
             
             
