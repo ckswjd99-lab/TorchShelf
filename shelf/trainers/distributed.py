@@ -8,7 +8,7 @@ import numpy as np
 import time
 
 
-def train_dist(train_loader, model, criterion, optimizer, epoch, batch_scatter=False, epoch_pbar=None, verbose=True):
+def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None, verbose=True):
     rank = dist.get_rank()
     size = dist.get_world_size()
     
@@ -40,13 +40,8 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, batch_scatter=F
 
         for param in model.parameters():
             if param.grad is not None:
-                if batch_scatter == False:
-                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
-                    param.grad.data /= dist.get_world_size()
-                else:
-                    mask = torch.randint(0, dist.get_world_size(), param.grad.size()).cuda() == dist.get_rank()
-                    param.grad.data *= mask
-                    dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+                param.grad.data /= dist.get_world_size()
 
         optimizer.step()
 
@@ -78,9 +73,12 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, batch_scatter=F
 
 def train_dist_zo(
     train_loader, model, criterion, optimizer, epoch,
-    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge', batch_scatter=False,
+    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge',
     config=None, verbose=True
 ):
+    rank = dist.get_rank()
+    size = dist.get_world_size()
+    
     model.eval()
     
     for param in model.parameters():
@@ -89,6 +87,8 @@ def train_dist_zo(
     num_data = 0
     num_correct = 0
     sum_loss = 0
+    
+    if rank != 0: verbose = False
     
     lr_history = []
     avg_lr = 0
@@ -108,15 +108,9 @@ def train_dist_zo(
             estimated_gradient = gradient_estimate_paramwise(input, label, model, criterion, query=query, smoothing=smoothing)
         
         # all-reduce gradient
-        if not batch_scatter:
-            for name, grad in estimated_gradient.items():
-                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
-                grad /= dist.get_world_size()
-        else:
-            for name, grad in estimated_gradient.items():
-                mask = torch.randint(0, dist.get_world_size(), grad.size()).cuda() == dist.get_rank()
-                grad *= mask
-                dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+        for name, grad in estimated_gradient.items():
+            dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+            grad /= dist.get_world_size()
             
             
         # estimate learning rate

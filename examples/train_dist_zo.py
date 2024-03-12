@@ -86,7 +86,7 @@ def run(rank, size):
         # train for one epoch
         train_acc, train_loss = train_dist_zo(
             train_loader, model, criterion, optimizer, epoch,
-            smoothing=SMOOTHING, query=NUM_QUERY, lr_auto=True, lr_max=LEARNING_RATE, lr_min=1e-5, ge_type='rge'
+            smoothing=SMOOTHING, query=NUM_QUERY//NUM_WORKERS, lr_auto=True, lr_max=LEARNING_RATE, lr_min=1e-5, ge_type='rge'
         )
 
         # evaluate on validation set
@@ -130,6 +130,8 @@ if __name__ == '__main__':
     print(f'>> EPOCHS: {EPOCHS}')
     print(f'>> BATCH_SIZE: {BATCH_SIZE}')
     print(f'>> LEARNING_RATE: {LEARNING_RATE}')
+    print(f'>> SMOOTHING: {SMOOTHING}')
+    print(f'>> NUM_QUERY: {NUM_QUERY}')
     print(f'>> IMAGE_SIZE: {IMAGE_SIZE}')
     print(f'>> PATCH_SIZE: {PATCH_SIZE}')
     print(f'>> DIM_HIDDEN: {DIM_HIDDEN}')
