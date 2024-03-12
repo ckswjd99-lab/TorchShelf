@@ -2,7 +2,7 @@ import torch
 from tqdm import tqdm
 import torch.distributed as dist
 
-from .zeroth_order import gradient_estimate_randvec, learning_rate_estimate_second_order, gradient_fo
+from .zeroth_order import gradient_estimate_randvec, gradient_estimate_coordwise, gradient_estimate_paramwise, learning_rate_estimate_second_order
 
 import numpy as np
 import time
@@ -11,6 +11,9 @@ import time
 def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None, verbose=True):
     rank = dist.get_rank()
     size = dist.get_world_size()
+    
+    for param in model.parameters():
+        dist.broadcast(param.data, 0)
     
     model.train()
 
@@ -68,74 +71,62 @@ def train_dist(train_loader, model, criterion, optimizer, epoch, epoch_pbar=None
     return accuracy, avg_loss
 
 
-def train_dist_zo_rge_autolr(
-        train_loader, model, criterion, optimizer, epoch, 
-        smoothing=1e-3, max_lr=1e-2, query=1, verbose=True, confidence=0.1, clip_loss_diff=1e99, one_way=False, config=None
-    ):
+def train_dist_zo(
+    train_loader, model, criterion, optimizer, epoch,
+    smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge',
+    config=None, verbose=True
+):
     model.eval()
-
-    if config is not None:
-        start_time = time.time()
-
-    rank = dist.get_rank()
-    world_size = dist.get_world_size()
-    if rank != 0: verbose = False
-
-    num_query_per_process = query // world_size
-
+    
+    for param in model.parameters():
+        dist.broadcast(param.data, 0)
+    
     num_data = 0
     num_correct = 0
     sum_loss = 0
-
+    
     lr_history = []
     avg_lr = 0
 
     pbar = tqdm(train_loader, desc=f'Epoch {epoch+1}', leave=False) if verbose else train_loader
-
-    momentum_buffer = {}
-    sync_model = None
-    for name, param in model.named_parameters():
-        momentum_buffer[name] = torch.zeros_like(param.data)
-
+    
     for input, label in pbar:
         input = input.cuda()
         label = label.cuda()
 
-        if sync_model is not None:
-            sync_model.wait()
-
-        estimated_gradient = gradient_estimate_randvec(
-            input, label, model, criterion, 
-            query=num_query_per_process, smoothing=smoothing, one_way=one_way, clip_loss_diff=clip_loss_diff
-        )
-
-        reduced_estimated_gradient = {}
-        for name, param in model.named_parameters():
-            reduced_estimated_gradient[name] = estimated_gradient[name] / dist.get_world_size()
-
-        for name, param in model.named_parameters():
-            dist.reduce(reduced_estimated_gradient[name], op=dist.ReduceOp.SUM, dst=0)
-
-        estimated_gradient = reduced_estimated_gradient
-
-        lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
-
-        lr = abs(lr.item()) * confidence
-        lr = min(lr, max_lr)
-
-        optimizer.zero_grad()
-        # set learning rate
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = lr
+        # estimate gradient
+        if ge_type == 'rge':
+            estimated_gradient = gradient_estimate_randvec(input, label, model, criterion, query=query, smoothing=smoothing)
+        elif ge_type == 'cge':
+            estimated_gradient = gradient_estimate_coordwise(input, label, model, criterion, smoothing=smoothing)
+        elif ge_type == 'paramwise':
+            estimated_gradient = gradient_estimate_paramwise(input, label, model, criterion, query=query, smoothing=smoothing)
+        
+        # all-reduce gradient
+        for name, grad in estimated_gradient.items():
+            dist.all_reduce(grad, op=dist.ReduceOp.SUM)
+            grad /= dist.get_world_size()
+            
+        # estimate learning rate
+        if lr_auto:
+            lr = learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=smoothing)
+            lr = abs(lr.item()) if lr != 0 else lr_min
+            lr = min(max(lr, lr_min), lr_max)
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = lr
+        else:
+            for param_group in optimizer.param_groups:
+                lr = min(max(lr, lr_min), lr_max)
+                param_group['lr'] = lr
+                
         lr_history.append(lr)
         avg_lr += lr
 
+        optimizer.zero_grad()
         for name, param in model.named_parameters():
-            param.grad = estimated_gradient[name]
+            if param.requires_grad:
+                param.grad = estimated_gradient[name]
         optimizer.step()
-
-        for param in model.parameters():
-            sync_model = dist.broadcast(param.data, 0, async_op=True)
 
         output = model(input)
         loss = criterion(output, label)
@@ -153,13 +144,12 @@ def train_dist_zo_rge_autolr(
         
     accuracy = num_correct / num_data
     avg_loss = sum_loss / num_data
-
+    
     avg_lr /= len(train_loader)
     std_lr = np.std(lr_history)
 
     if config is not None:
         config['avg_lr'] = avg_lr
         config['std_lr'] = std_lr
-        config['time_elapsed'] = time.time() - start_time
 
     return accuracy, avg_loss

@@ -1,5 +1,5 @@
 from import_shelf import shelf
-from shelf.trainers import adjust_learning_rate, train, validate, train_dist
+from shelf.trainers import adjust_learning_rate, train, validate, train_dist_zo
 from shelf.dataloaders import get_MNIST_dataset, get_CIFAR10_dataset
 from shelf.models.transformer import VisionTransformer
 
@@ -29,6 +29,9 @@ EPOCHS = 200
 BATCH_SIZE = 512
 LEARNING_RATE = 1e-4
 
+SMOOTHING = 1e-3
+NUM_QUERY = 4
+
 IMAGE_SIZE = 32
 PATCH_SIZE = 4
 DIM_HIDDEN = 512
@@ -41,7 +44,7 @@ EMB_DROPOUT = 0.1
 NUM_CLASSES = 10
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-NUM_WORKERS = 4
+NUM_WORKERS = 1
 PATH_MODEL = './saves/train_dist/model.pth'
 
 # model, criterion, optimizer
@@ -81,7 +84,10 @@ def run(rank, size):
         epoch_lr = scheduler.get_last_lr()[0]
 
         # train for one epoch
-        train_acc, train_loss = train_dist(train_loader, model, criterion, optimizer, epoch)
+        train_acc, train_loss = train_dist_zo(
+            train_loader, model, criterion, optimizer, epoch,
+            smoothing=SMOOTHING, query=NUM_QUERY, lr_auto=True, lr_max=LEARNING_RATE, lr_min=1e-5, ge_type='rge'
+        )
 
         # evaluate on validation set
         val_acc, val_loss = validate(val_loader, model, criterion, epoch, verbose=(rank == 0))
