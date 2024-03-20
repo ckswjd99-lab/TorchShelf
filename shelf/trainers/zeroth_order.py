@@ -100,7 +100,7 @@ def gradient_estimate_randvec(input, label, model, criterion, query=1, smoothing
             if not param.requires_grad: continue
         
             estimated_gradient[name] = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
-            if 'weight_orig' in name:
+            if '_orig' in name and name.replace('_orig', '_mask') in state_dict:
                 mask = state_dict[name.replace('_orig', '_mask')]
                 estimated_gradient[name] *= mask
             param.data += estimated_gradient[name] * smoothing
@@ -152,7 +152,7 @@ def gradient_estimate_paramwise(input, label, model, criterion, query=1, smoothi
         if not param.requires_grad: continue
         
         mask = None
-        if 'weight_orig' in name:
+        if '_orig' in name and name.replace('_orig', '_mask') in state_dict:
             mask = state_dict[name.replace('_orig', '_mask')]
         
         for _ in range(query):
@@ -196,7 +196,7 @@ def gradient_estimate_coordwise(input, label, model, criterion, smoothing):
         mask = None
         
         estimated_gradient = torch.zeros_like(param.data)
-        if 'weight_orig' in name:
+        if '_orig' in name and name.replace('_orig', '_mask') in state_dict:
             mask = state_dict[name.replace('_orig', '_mask')]
         
         for i in range(param.data.numel()):

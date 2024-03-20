@@ -12,8 +12,6 @@ import torch.distributed as dist
 import torch.multiprocessing as mp
 
 import os
-os.environ["CUDA_VISIBLE_DEVICES"]="MIG-60fed909-9539-55f4-9bab-e99df995d4a0"
-
 
 
 def print_root(msg):
@@ -46,8 +44,6 @@ NUM_CLASSES = 10
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 NUM_WORKERS = 1
 PATH_MODEL = './saves/train_dist/model.pth'
-
-# model, criterion, optimizer
 
 
 def run(rank, size):
