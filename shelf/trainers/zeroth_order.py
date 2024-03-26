@@ -147,6 +147,8 @@ def gradient_estimate_paramwise(input, label, model, criterion, query=1, smoothi
         if not param.requires_grad: continue
         
         averaged_gradient[name] = torch.zeros_like(param.data)
+    
+    num_pg = len(list(model.parameters()))
 
     for name, param in model.named_parameters():
         if not param.requires_grad: continue
@@ -155,7 +157,7 @@ def gradient_estimate_paramwise(input, label, model, criterion, query=1, smoothi
         if '_orig' in name and name.replace('_orig', '_mask') in state_dict:
             mask = state_dict[name.replace('_orig', '_mask')]
         
-        for _ in range(query):
+        for _ in range(int(query/num_pg)):
             gaussian_noise = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
             
             if mask is not None:
@@ -229,9 +231,10 @@ def gradient_fo(input, label, model, criterion):
 
 
 @torch.no_grad()
-def learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=1e-3):
-    num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    smoothing /= num_params
+def learning_rate_estimate_second_order(input, label, model, criterion, estimated_gradient, smoothing=1e-3, scale_by_num_params=True):
+    if scale_by_num_params:
+        num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+        smoothing /= num_params
     
     # measure original loss
     loss_original = criterion(model(input), label)
