@@ -271,7 +271,7 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
     
     # estimate zHz
     zHz = (loss_perturbed_pos + loss_perturbed_neg - 2 * loss_original) / (smoothing ** 2)
-    zHz = max(zHz, 0)
+    if zHz < 0: return 0
 
     # estimate learning rate
     lr = Jz / (zHz + 1e-4)
