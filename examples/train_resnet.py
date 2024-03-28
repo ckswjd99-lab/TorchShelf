@@ -1,7 +1,7 @@
 from import_shelf import shelf
 from shelf.models.resnet import ResNet18, ResNet34, ResNet50, ResNet101, ResNet152
 from shelf.trainers import adjust_learning_rate, train, validate
-from shelf.dataloaders import get_CIFAR100_dataset
+from shelf.dataloaders import get_CIFAR10_dataset
 
 import torch
 import torch.nn as nn
@@ -14,11 +14,11 @@ ModelClass = ResNet152
 
 EPOCHS = 200
 BATCH_SIZE = 128
-LEARNING_RATE = 0.1 * 5
+LEARNING_RATE = 0.1
 MOMENTUM = 0.9
 WEIGHT_DECAY = 5e-4
 
-NUM_CLASSES = 100
+NUM_CLASSES = 10
 
 PRETRAIN_EPOCH = 50
 TRANSFER_EPOCH = 5
@@ -26,7 +26,7 @@ TRANSFER_EPOCH = 5
 DEVICE = 'cuda'
 
 # load dataset
-train_loader, val_loader = get_CIFAR100_dataset(batch_size=BATCH_SIZE)
+train_loader, val_loader = get_CIFAR10_dataset(batch_size=BATCH_SIZE)
 
 print(f'========== From Scratch: {ModelClass.__name__} ==========')
 
