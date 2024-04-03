@@ -271,9 +271,16 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
     
     # estimate zHz
     zHz = (loss_perturbed_pos + loss_perturbed_neg - 2 * loss_original) / (smoothing ** 2)
-    if zHz < 0: return 0
-
-    # estimate learning rate
-    lr = Jz / (zHz + 1e-4)
-
+    
+    if zHz < 0:
+        if loss_perturbed_pos < loss_perturbed_neg:
+            lr = torch.tensor(smoothing)
+        else:
+            lr = torch.tensor(-smoothing)
+    else:
+        if loss_perturbed_pos > loss_original and loss_perturbed_neg > loss_original:
+            lr = torch.tensor(0)
+        else:
+            lr = Jz / (zHz + 1e-4)
+    
     return lr
