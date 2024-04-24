@@ -372,3 +372,49 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
             lr = Jz / (zHz + 1e-4)
     
     return lr
+
+def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level_noise=0):
+    def calc_r_by_gnum(N, d):
+        equation = np.poly1d([1] + [0 for _ in range(N-1)] + [-d, d-1], False)
+        roots = np.roots(equation)
+        roots = roots[np.isreal(roots)]
+        r = np.real(np.max(roots))
+
+        if r <= 1:
+            raise ValueError("r must be greater than 1")
+
+        return r
+
+    all_gradients = torch.cat([grad.flatten() for grad in estimated_gradient.values()]).abs()
+    all_gradients = torch.sort(all_gradients + torch.normal(0, level_noise, size=all_gradients.size(), device=all_gradients.device), descending=True).values
+    num_params = all_gradients.size(0)
+
+    # Calculate r
+    r = calc_r_by_gnum(num_groups, num_params)
+
+    # Find milestones
+    milestones = []
+    group_sizes = []
+    group_size = 1
+    group_start_idx = 0
+    for group_idx in range(num_groups):
+        milestones.append(all_gradients[group_start_idx])
+        group_start_idx += math.floor(group_size)
+        group_sizes.append(math.floor(group_size))
+        group_size *= r
+    # WARNING: it sometimes makes empty group. should be fixed
+    
+    milestones[-1] = all_gradients[-1]
+
+    # Group the parameters
+    group_dict = {}
+    for name, grad in estimated_gradient.items():
+        group_dict[name] = torch.zeros_like(grad)
+        for i, milestone in enumerate(milestones[::-1]):
+            group_idx = num_groups - i - 1
+            if descending:
+                group_dict[name][grad.abs() >= milestone] = group_idx
+            else:
+                group_dict[name][grad.abs() <= milestone] = group_idx
+
+    return group_dict, group_sizes
