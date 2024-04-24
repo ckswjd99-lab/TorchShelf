@@ -107,11 +107,13 @@ def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level
 
     # Find milestones
     milestones = []
+    group_sizes = []
     group_size = 1
     group_start_idx = 0
     for group_idx in range(num_groups):
         milestones.append(all_gradients[group_start_idx])
         group_start_idx += math.floor(group_size)
+        group_sizes.append(math.floor(group_size))
         group_size *= r
     # WARNING: it sometimes makes empty group. should be fixed
     
@@ -128,7 +130,7 @@ def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level
             else:
                 group_dict[name][grad.abs() <= milestone] = group_idx
 
-    return group_dict
+    return group_dict, group_sizes
 
 def group_by_given_logr(estimated_gradient, logr, descending=True):
     all_gradients = torch.cat([grad.flatten() for grad in estimated_gradient.values()]).abs()
@@ -136,7 +138,7 @@ def group_by_given_logr(estimated_gradient, logr, descending=True):
 
     num_groups = int(np.log(np.exp(np.log(num_params) + logr) - num_params + 1) / logr)
     
-    group_dict = group_by_gradient_exp(estimated_gradient, num_groups, descending)
+    group_dict, _ = group_by_gradient_exp(estimated_gradient, num_groups, descending)
 
     return group_dict, num_groups
 
@@ -144,7 +146,7 @@ def group_by_given_logr(estimated_gradient, logr, descending=True):
 def train_zo(
         train_loader, model, criterion, optimizer, epoch,
         smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, momentum=0.9,
-        num_groups=1, group_dict=None, momentum_dict=None, decay_rate=None, r_per_decay=500, level_noise=0, warmup=False,
+        num_groups=1, group_dict=None, group_sizes=None, momentum_dict=None, decay_rate=None, r_per_decay=500, level_noise=0, warmup=False,
         config=None, verbose=True
     ):
     model.eval()
@@ -183,7 +185,7 @@ def train_zo(
             if not param.requires_grad: continue
             real_gradient[name] = torch.normal(mean=0, std=1, size=param.data.size(), device=param.data.device, dtype=param.data.dtype)
 
-        group_dict = group_by_gradient_exp(real_gradient, num_groups)
+        group_dict, group_sizes = group_by_gradient_exp(real_gradient, num_groups)
 
         estimated_gradient = real_gradient
 
@@ -215,27 +217,24 @@ def train_zo(
         optimizer.zero_grad()
 
         # Gradient estimation
-        real_gradient = gradient_fo(input, label, model, criterion)
+        # real_gradient = gradient_fo(input, label, model, criterion)
         scaled_grads={}
-        estimated_gradient = gradient_fwd(input, label, model, functional_xent, query=1, type='gge', group_dict=group_dict, num_groups=num_groups, scaled_grads=scaled_grads)
+        estimated_gradient = gradient_fwd(input, label, model, functional_xent, query=1, type='gge', group_dict=group_dict, group_sizes=group_sizes, num_groups=num_groups, scaled_grads=scaled_grads)
         num_query += query * num_groups
 
         # Cosine similarity
-        all_real_gradients = torch.cat([grad.flatten() for grad in real_gradient.values()])
-        all_estimated_gradients = torch.cat([grad.flatten() for grad in scaled_grads.values()])
+        # all_real_gradients = torch.cat([grad.flatten() for grad in real_gradient.values()])
+        # all_estimated_gradients = torch.cat([grad.flatten() for grad in scaled_grads.values()])
 
-        real_norm = all_real_gradients.norm()
-        estimated_norm = all_estimated_gradients.norm()
+        # real_norm = all_real_gradients.norm()
+        # estimated_norm = all_estimated_gradients.norm()
         
-        cosine_similarity = (all_real_gradients * all_estimated_gradients).sum() / (real_norm * estimated_norm)
+        # cosine_similarity = (all_real_gradients * all_estimated_gradients).sum() / (real_norm * estimated_norm)
 
         # Apply gradient
         for name, param in model.named_parameters():
             if not param.requires_grad: continue
             param.grad = scaled_grads[name]
-
-        # Clip gradient
-        # torch.nn.utils.clip_grad_norm_(model.parameters(), 100)
 
         # Update momentum
         
@@ -269,7 +268,7 @@ def train_zo(
             gradient_momentum[name] = -torch.addcdiv(torch.zeros_like(gradient_momentum[name]), exp_avg, denom)
 
         # Update group
-        new_group_dict = group_by_gradient_exp(gradient_momentum, num_groups, level_noise)
+        new_group_dict, group_sizes = group_by_gradient_exp(gradient_momentum, num_groups, level_noise)
 
         # Compare the group dict
         all_group_old = torch.cat([group_dict[name].flatten() for name in group_dict.keys()])
@@ -305,12 +304,12 @@ def train_zo(
         accuracy = num_correct / num_data
         avg_loss = sum_loss / num_data
 
-        sum_cosine_sim += cosine_similarity.item()
-        sum_magnitude += estimated_norm.item()/real_norm.item()
-        sum_mse += (all_real_gradients - all_estimated_gradients).pow(2).sum().item()
+        # sum_cosine_sim += cosine_similarity.item()
+        # sum_magnitude += estimated_norm.item()/real_norm.item()
+        # sum_mse += (all_real_gradients - all_estimated_gradients).pow(2).sum().item()
 
         pbar.set_postfix(
-            cossim=cosine_similarity.item(), mag=estimated_norm.item()/real_norm.item(), mse=(all_real_gradients - all_estimated_gradients).pow(2).sum().item(),
+            # cossim=cosine_similarity.item(), mag=estimated_norm.item()/real_norm.item(), mse=(all_real_gradients - all_estimated_gradients).pow(2).sum().item(),
             tacc=accuracy, tloss=avg_loss
         ) if verbose else None
 
@@ -325,6 +324,7 @@ def train_zo(
     if config is not None:
         config['num_query'] = num_query
         config['group_dict'] = group_dict
+        config['group_sizes'] = group_sizes
         config['cosine_similarity'] = cosine_similarity
         config['magnitude_ratio'] = magnitude_ratio
         config['mse'] = sum_mse / len(train_loader)
@@ -399,6 +399,7 @@ print()
 ## TRAINING ##
 
 group_dict = None
+group_sizes = None
 momentum_dict = None
 decay_rate = None
 
@@ -416,7 +417,7 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
         train_acc, train_loss = train_zo(
             train_loader, model, criterion, optimizer, epoch,
             query=NUM_QUERY, lr_auto=False, lr_max=lr, lr_min=lr, momentum=MOMENTUM,
-            num_groups=num_groups, group_dict=group_dict, momentum_dict=momentum_dict, decay_rate=decay_rate, level_noise=level_noise,
+            num_groups=num_groups, group_dict=group_dict, group_sizes=group_sizes, momentum_dict=momentum_dict, decay_rate=decay_rate, level_noise=level_noise,
             config=config, verbose=True
         )
 
@@ -430,6 +431,7 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
     val_acc, val_loss = validate(val_loader, model, criterion, epoch)
 
     group_dict = config['group_dict']
+    group_sizes = config['group_sizes']
     momentum_dict = config['momentum_dict']
     num_bp = config['num_bp']
     group_diff = config['group_diff']
@@ -452,6 +454,6 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
     )
 
     # scheduler.step()
-    torch.save(model.state_dict(), f"./saves/fwdgge_poc_e{epoch+1:03d}.pth")
+    # torch.save(model.state_dict(), f"./saves/fwdgge_poc_e{epoch+1:03d}.pth")
 
 torch.save(model.state_dict(), PATH_MODEL)

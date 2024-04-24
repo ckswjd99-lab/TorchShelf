@@ -263,6 +263,7 @@ def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge',
             estimated_grads[name] /= query
     elif type == 'gge':
         group_dict = kwargs['group_dict']
+        group_sizes = kwargs['group_sizes']
         num_groups = kwargs['num_groups']
         scaled_grads = kwargs['scaled_grads']
 
@@ -270,25 +271,25 @@ def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge',
             scaled_grads[name] = torch.zeros_like(p)
 
         for q in range(query):
+            perturb_noise_total = tuple(torch.randn_like(p) for p in params)
             for group_idx in range(num_groups):
                 group_masks = tuple(param_group == group_idx for param_group in group_dict.values())
 
-                group_size = sum(mask.sum().item() for mask in group_masks)
-                norm_noise = 0
+                group_size = group_sizes[group_idx]
                 if group_size == 1:
-                    perturb_noise = tuple(torch.ones_like(p) * mask for p, mask in zip(params, group_masks))
-                    norm_noise += sum(p.norm() ** 2 for p in perturb_noise)
+                    perturb_noise = tuple(mask.float() for p, mask in zip(params, group_masks))
+                    norm_noise = 1
                 else:
-                    perturb_noise = tuple(torch.randn_like(p) * mask for p, mask in zip(params, group_masks))
-                    norm_noise += sum(p.norm() ** 2 for p in perturb_noise)
-                # norm_noise = math.sqrt(norm_noise)
+                    perturb_noise = tuple(pnoise * mask for pnoise, mask in zip(perturb_noise_total, group_masks))
+                    norm_noise = sum(p.norm() ** 2 for p in perturb_noise)
+                
                 if norm_noise == 0:
                     norm_noise = 1
 
                 f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
                 loss, jvp = fc.jvp(f, (tuple(params),), (perturb_noise,))
 
-                for name, p, mask in zip(names, perturb_noise, group_masks):
+                for name, p, in zip(names, perturb_noise):
                     estimated_grads[name] += jvp * p
                     scaled_grads[name] += jvp * p / norm_noise
 
