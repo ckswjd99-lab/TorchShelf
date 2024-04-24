@@ -4,6 +4,9 @@ from tqdm import tqdm
 import numpy as np
 import math
 
+from functools import partial
+import torch.func as fc
+
 def train_zo(
     train_loader, model, criterion, optimizer, epoch,
     smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, ge_type='rge',
@@ -213,6 +216,90 @@ def gradient_estimate_coordwise(input, label, model, criterion, smoothing):
         averaged_gradient[name] += estimated_gradient
 
     return averaged_gradient
+
+
+@torch.no_grad()
+def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge', **kwargs):
+    named_buffers = dict(model.named_buffers())
+    named_params = dict(model.named_parameters())
+    names = named_params.keys()
+    params = named_params.values()
+
+    estimated_grads = {name: torch.zeros_like(p) for name, p in zip(names, params)}
+
+    if type == 'rge':
+        for q in range(query):
+            perturb_noise = tuple(torch.randn_like(p) for p in params)
+
+            f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
+            loss, jvp = fc.jvp(f, (tuple(params),), (perturb_noise,))
+
+            for name, p in zip(names, perturb_noise):
+                estimated_grads[name] += jvp * p
+
+        for name in names:
+            estimated_grads[name] /= query
+    elif type == 'pge':
+        backup_requires_grad = [p.requires_grad for p in params]
+        for p in params:
+            p.requires_grad_(False)
+
+        for q in range(query):
+            for p in params:
+                p.requires_grad_(True)
+                perturb_noise = tuple(torch.randn_like(p) if p.requires_grad else torch.zeros_like(p) for p in params)
+
+                f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
+                loss, jvp = fc.jvp(f, (tuple(params),), (perturb_noise,))
+
+                for name, p in zip(names, perturb_noise):
+                    estimated_grads[name] += jvp * p
+                p.requires_grad_(False)
+
+        for p, requires_grad in zip(params, backup_requires_grad):
+            p.requires_grad_(requires_grad)
+
+        for name in names:
+            estimated_grads[name] /= query
+    elif type == 'gge':
+        group_dict = kwargs['group_dict']
+        num_groups = kwargs['num_groups']
+        scaled_grads = kwargs['scaled_grads']
+
+        for name, p in zip(names, params):
+            scaled_grads[name] = torch.zeros_like(p)
+
+        for q in range(query):
+            for group_idx in range(num_groups):
+                group_masks = tuple(param_group == group_idx for param_group in group_dict.values())
+
+                group_size = sum(mask.sum().item() for mask in group_masks)
+                norm_noise = 0
+                if group_size == 1:
+                    perturb_noise = tuple(torch.ones_like(p) * mask for p, mask in zip(params, group_masks))
+                    norm_noise += sum(p.norm() ** 2 for p in perturb_noise)
+                else:
+                    perturb_noise = tuple(torch.randn_like(p) * mask for p, mask in zip(params, group_masks))
+                    norm_noise += sum(p.norm() ** 2 for p in perturb_noise)
+                # norm_noise = math.sqrt(norm_noise)
+                if norm_noise == 0:
+                    norm_noise = 1
+
+                f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
+                loss, jvp = fc.jvp(f, (tuple(params),), (perturb_noise,))
+
+                for name, p, mask in zip(names, perturb_noise, group_masks):
+                    estimated_grads[name] += jvp * p
+                    scaled_grads[name] += jvp * p / norm_noise
+
+        for name in names:
+            estimated_grads[name] /= query
+            scaled_grads[name] /= query
+
+    else:
+        raise NotImplementedError
+
+    return estimated_grads
 
 
 def gradient_fo(input, label, model, criterion):
