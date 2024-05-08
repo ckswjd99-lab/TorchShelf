@@ -17,7 +17,7 @@ from import_shelf import shelf
 from shelf.models.transformer import VisionTransformer
 from shelf.models.mutable import MutableResNet18
 from shelf.dataloaders.cifar import get_CIFAR10_dataset
-from shelf.trainers.zeroth_order import learning_rate_estimate_second_order, gradient_fo, gradient_fwd, gradient_estimate_randvec, group_by_gradient_exp
+from shelf.trainers.zeroth_order import gradient_fo, gradient_fwd, group_by_gradient_exp, drop_momentum_by_score
 from shelf.trainers.classic import train, validate
 
 from tqdm import tqdm
@@ -42,7 +42,8 @@ NUM_QUERY = 1
 LR_MAX = 1e-2
 LR_MIN = 1e-5
 MOMENTUM = 0.9
-QUERY_BASE = 1.05
+# QUERY_BASE = 1.05
+QUERY_BASE = 1.005
 LEVEL_NOISE = 1e-4
 
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -100,7 +101,7 @@ def group_by_given_logr(estimated_gradient, logr, descending=True):
 def train_zo(
         train_loader, model, criterion, optimizer, epoch,
         smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, momentum=0.9,
-        num_groups=1, group_dict=None, group_sizes=None, momentum_dict=None, decay_rate=None, r_per_decay=500, level_noise=0, warmup=False,
+        num_groups=1, group_dict=None, group_sizes=None, momentum_dict=None, decay_rate=None, r_per_decay=500, level_noise=0, warmup=False, num_drop=0,
         config=None, verbose=True
     ):
     model.eval()
@@ -170,74 +171,38 @@ def train_zo(
 
         optimizer.zero_grad()
 
+        num_iter = 10
+        itgge_num_groups = num_groups//num_iter
+
         # Gradient estimation
-        # real_gradient = gradient_fo(input, label, model, criterion)
-        scaled_grads={}
-        estimated_gradient = gradient_fwd(input, label, model, functional_xent, query=1, type='gge', group_dict=group_dict, group_sizes=group_sizes, num_groups=num_groups, scaled_grads=scaled_grads)
+        real_gradient = gradient_fo(input, label, model, criterion)
+        estimated_gradient = gradient_fwd(
+            input, label, model, criterion,
+            query=num_iter, type='itgge', momentum_dict=estimated_gradient, num_groups=itgge_num_groups,
+            cheat_fo=True
+        )
         num_query += query * num_groups
 
         # Cosine similarity
-        # all_real_gradients = torch.cat([grad.flatten() for grad in real_gradient.values()])
-        # all_estimated_gradients = torch.cat([grad.flatten() for grad in scaled_grads.values()])
+        all_real_gradients = torch.cat([grad.flatten() for grad in real_gradient.values()])
+        all_estimated_gradients = torch.cat([grad.flatten() for grad in estimated_gradient.values()])
+        # all_estimated_gradients = torch.cat([grad.flatten() for grad in estimated_gradient.values()])
 
-        # real_norm = all_real_gradients.norm()
-        # estimated_norm = all_estimated_gradients.norm()
+        real_norm = all_real_gradients.norm()
+        estimated_norm = all_estimated_gradients.norm()
         
-        # cosine_similarity = (all_real_gradients * all_estimated_gradients).sum() / (real_norm * estimated_norm)
+        cosine_similarity = (all_real_gradients * all_estimated_gradients).sum() / (real_norm * estimated_norm)
 
         # Apply gradient
         for name, param in model.named_parameters():
             if not param.requires_grad: continue
-            param.grad = scaled_grads[name]
+            param.grad = estimated_gradient[name]
+            # param.grad = estimated_gradient[name]
 
         # Update momentum
         
         # Calculate update direction of Adam and use it as momentum
-        optim_group = optimizer.param_groups[0]
-        sqad_mean = 0
-        for name, param in model.named_parameters():
-            state = optimizer.state[param]
-            
-            if 'step' not in state or state['step'] < 1:
-                if not param.requires_grad: continue
-                gradient_momentum[name] = momentum * gradient_momentum[name] + (1 - momentum) * estimated_gradient[name]
-                continue
-
-            exp_avg = state['exp_avg']
-            exp_avg_sq = state['exp_avg_sq']
-            beta1, beta2 = optim_group['betas']
-            step = state['step']
-            eps = optim_group['eps']
-
-            bias_correction1 = 1 - beta1 ** step
-            bias_correction2 = 1 - beta2 ** step
-
-            step_size = lr / bias_correction1
-            step_size_neg = step_size.neg()
-
-            bias_correction2_sqrt = bias_correction2.sqrt()
-
-            denom = (exp_avg_sq.sqrt() / (bias_correction2_sqrt * step_size_neg)).add_(eps / step_size_neg)
-
-            gradient_momentum[name] = -torch.addcdiv(torch.zeros_like(gradient_momentum[name]), exp_avg, denom)
-
-        # Update group
-        new_group_dict, group_sizes = group_by_gradient_exp(gradient_momentum, num_groups, level_noise)
-
-        # Compare the group dict
-        all_group_old = torch.cat([group_dict[name].flatten() for name in group_dict.keys()])
-        all_group_new = torch.cat([new_group_dict[name].flatten() for name in new_group_dict.keys()])
-        num_diff = torch.sum(all_group_old != all_group_new).item()
-        group_diff_ratio = num_diff / all_group_old.size(0)
-        sum_group_diff += group_diff_ratio
-
-        group_dict = new_group_dict
-
-        if config is not None:
-            for name, param in group_dict.items():
-                group_avg[name] += param.float().mean().item()
-        
-        sum_decay_rate += decay_rate
+        gradient_momentum = estimated_gradient
 
         # Update the model
         optimizer.step()
@@ -245,10 +210,6 @@ def train_zo(
         # Statistics
         output = model(input)
         loss = criterion(output, label)
-
-        if torch.isnan(loss).any():
-            print(f'nan detected after step {i}, restart from epoch {epoch}')
-            return None, None
 
         _, predicted = torch.max(output.data, 1)
         num_data += label.size(0)
@@ -258,12 +219,12 @@ def train_zo(
         accuracy = num_correct / num_data
         avg_loss = sum_loss / num_data
 
-        # sum_cosine_sim += cosine_similarity.item()
-        # sum_magnitude += estimated_norm.item()/real_norm.item()
-        # sum_mse += (all_real_gradients - all_estimated_gradients).pow(2).sum().item()
+        sum_cosine_sim += cosine_similarity.item()
+        sum_magnitude += estimated_norm.item()/real_norm.item()
+        sum_mse += (all_real_gradients - all_estimated_gradients).pow(2).sum().item()
 
         pbar.set_postfix(
-            # cossim=cosine_similarity.item(), mag=estimated_norm.item()/real_norm.item(), mse=(all_real_gradients - all_estimated_gradients).pow(2).sum().item(),
+            cossim=cosine_similarity.item(), mag=estimated_norm.item()/real_norm.item(), mse=(all_real_gradients - all_estimated_gradients).pow(2).sum().item(),
             tacc=accuracy, tloss=avg_loss
         ) if verbose else None
 
@@ -292,31 +253,31 @@ def train_zo(
 
 ### MODEL ###
 
-# VeryTinyViT - 50.91% by FO
+# TinyViT
+model = VisionTransformer(
+    image_size=32,
+    patch_size=4,
+    num_classes=10,
+    dim=512,
+    depth=4,
+    heads=6,
+    mlp_dim=256,
+    dropout=0.1,
+    emb_dropout=0.1
+).to(DEVICE)
+
+# VeryTinyViT2 - 43.91% by FO
 # model = VisionTransformer(
 #     image_size=32,
 #     patch_size=4,
 #     num_classes=10,
 #     dim=16,
-#     depth=4,
+#     depth=2,
 #     heads=1,
 #     mlp_dim=32,
 #     dropout=0.1,
 #     emb_dropout=0.1
 # ).to(DEVICE)
-
-# VeryTinyViT2 - 43.91% by FO
-model = VisionTransformer(
-    image_size=32,
-    patch_size=4,
-    num_classes=10,
-    dim=16,
-    depth=2,
-    heads=1,
-    mlp_dim=32,
-    dropout=0.1,
-    emb_dropout=0.1
-).to(DEVICE)
 
 start_epoch = 0
 RESUME_PATH = args.resume
@@ -338,10 +299,11 @@ print()
 
 ### OTHERS ###
 
-EPOCHS = 2000
+# EPOCHS = 2000
+EPOCHS = 20000
 
 criterion = nn.CrossEntropyLoss()
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, eps=1e-8)
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, eps=1e-8, betas=(0.5, 0.5))
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, EPOCHS)
 
 print(optimizer)
@@ -367,20 +329,13 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
 
     config = {}
 
-    while True:
-        train_acc, train_loss = train_zo(
-            train_loader, model, criterion, optimizer, epoch,
-            query=NUM_QUERY, lr_auto=False, lr_max=lr, lr_min=lr, momentum=MOMENTUM,
-            num_groups=num_groups, group_dict=group_dict, group_sizes=group_sizes, momentum_dict=momentum_dict, decay_rate=decay_rate, level_noise=level_noise,
-            config=config, verbose=True
-        )
-
-        if train_acc is None:
-            print(f"Restarting from epoch {epoch}")
-            model.load_state_dict(torch.load(f'./saves/fwdgge_poc_e{epoch:03d}.pth'))
-            continue
-        else:
-            break
+    train_acc, train_loss = train_zo(
+        train_loader, model, criterion, optimizer, epoch,
+        query=NUM_QUERY, lr_auto=False, lr_max=lr, lr_min=lr, momentum=MOMENTUM,
+        num_groups=num_groups, group_dict=group_dict, group_sizes=group_sizes, momentum_dict=momentum_dict, decay_rate=decay_rate, level_noise=level_noise,
+        config=config, verbose=True
+    )
+    # train_acc, train_loss = train(train_loader, model, nn.CrossEntropyLoss(), optimizer, epoch)
 
     val_acc, val_loss = validate(val_loader, model, criterion, epoch)
 
@@ -408,6 +363,8 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
     )
 
     # scheduler.step()
-    # torch.save(model.state_dict(), f"./saves/fwdgge_poc_e{epoch+1:03d}.pth")
+    if epoch % 100 == 0:
+        # torch.save(model.state_dict(), f"./saves/fwdgge_poc_e{epoch+1:03d}.pth")
+        torch.save(model.state_dict(), f"./saves/fwdgge_tinyvit_e{epoch+1:05d}.pth")
 
 torch.save(model.state_dict(), PATH_MODEL)

@@ -1,5 +1,6 @@
 import torch
-import torch.nn.utils.prune as prune
+import torch.nn as nn
+
 from tqdm import tqdm
 import numpy as np
 import math
@@ -265,7 +266,14 @@ def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge',
         group_dict = kwargs['group_dict']
         group_sizes = kwargs['group_sizes']
         num_groups = kwargs['num_groups']
+
         scaled_grads = kwargs['scaled_grads']
+        cheat_fo = kwargs['cheat_fo']
+
+        if cheat_fo:
+            with torch.enable_grad():
+                real_gradient = gradient_fo(input, label, model, nn.CrossEntropyLoss())
+                real_gradient_flatten = torch.cat([real_gradient[name].flatten() for name in names])
 
         for name, p in zip(names, params):
             scaled_grads[name] = torch.zeros_like(p)
@@ -279,23 +287,84 @@ def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge',
                 if group_size == 1:
                     perturb_noise = tuple(mask.float() for p, mask in zip(params, group_masks))
                     norm_noise = 1
-                else:
+                elif group_size < 10:
                     perturb_noise = tuple(pnoise * mask for pnoise, mask in zip(perturb_noise_total, group_masks))
                     norm_noise = sum(p.norm() ** 2 for p in perturb_noise)
+                else:
+                    perturb_noise = tuple(pnoise * mask for pnoise, mask in zip(perturb_noise_total, group_masks))
+                    norm_noise = group_size
                 
                 if norm_noise == 0:
                     norm_noise = 1
+                norm_noise = norm_noise ** 0.5
 
-                f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
-                loss, jvp = fc.jvp(f, (tuple(params),), (perturb_noise,))
+                # if cheat_fo:
+                perturb_noise_flatten = torch.cat([pnoise.flatten() for pnoise in perturb_noise])
+                jvp = torch.dot(perturb_noise_flatten, real_gradient_flatten)
+                # else:
+                # f = partial(criterion_functional, model=model, names=names, buffers=named_buffers, x=input, t=label)
+                # loss, jvp_2 = fc.jvp(f, (tuple(params),), (perturb_noise,))
 
-                for name, p, in zip(names, perturb_noise):
-                    estimated_grads[name] += jvp * p
-                    scaled_grads[name] += jvp * p / norm_noise
+                # if (jvp_1 - jvp_2).abs() > 1e-5 and False:
+                #     print(f"Too different! {jvp_1.item()} {jvp_2.item()}")
+                #     raise ValueError
+                
+                # jvp = jvp_1
+
+                for name, pnoise, in zip(names, perturb_noise):
+                    estimated_grads[name] += jvp * pnoise
+                    scaled_grads[name] += jvp * pnoise / norm_noise
 
         for name in names:
             estimated_grads[name] /= query
             scaled_grads[name] /= query
+
+    elif type == 'itgge':
+        momentum_dict = kwargs['momentum_dict']
+        num_groups = kwargs['num_groups']
+        cheat_fo = kwargs['cheat_fo']
+
+        itgge_partition_dict, itgge_group_sizes = group_by_gradient_exp(momentum_dict, num_groups, descending=True, level_noise=0.0, config=None)
+
+        if cheat_fo:
+            with torch.enable_grad():
+                real_gradient = gradient_fo(input, label, model, nn.CrossEntropyLoss())
+                real_gradient_flatten = torch.cat([real_gradient[name].flatten() for name in names])
+
+        for q in range(query):
+            itgge_scaled_gradient = {name: torch.zeros_like(p) for name, p in zip(names, params)}
+            
+            perturb_noise_total = tuple(torch.randn_like(p) for p in params)
+            for group_idx in range(num_groups):
+                group_masks = tuple(param_group == group_idx for param_group in itgge_partition_dict.values())
+
+                group_size = itgge_group_sizes[group_idx]
+                if group_size == 1:
+                    perturb_noise = tuple(mask.float() for p, mask in zip(params, group_masks))
+                    norm_noise = 1
+                elif group_size < 10:
+                    perturb_noise = tuple(pnoise * mask for pnoise, mask in zip(perturb_noise_total, group_masks))
+                    norm_noise = sum(p.norm() ** 2 for p in perturb_noise)
+                else:
+                    perturb_noise = tuple(pnoise * mask for pnoise, mask in zip(perturb_noise_total, group_masks))
+                    norm_noise = group_size
+                
+                if norm_noise == 0:
+                    norm_noise = 1
+                norm_noise = norm_noise ** 0.5
+
+                # if cheat_fo:
+                perturb_noise_flatten = torch.cat([pnoise.flatten() for pnoise in perturb_noise])
+                jvp = torch.dot(perturb_noise_flatten, real_gradient_flatten)
+
+                for name, pnoise, in zip(names, perturb_noise):
+                    itgge_scaled_gradient[name] += jvp * pnoise / norm_noise
+
+            for k, v in itgge_scaled_gradient.items():
+                estimated_grads[k] = 0.9 * estimated_grads[k] + 0.1 * v
+
+            itgge_partition_dict, itgge_group_sizes = group_by_gradient_exp(estimated_grads, num_groups, descending=True, level_noise=0.0, config=None)
+
 
     else:
         raise NotImplementedError
@@ -373,7 +442,7 @@ def learning_rate_estimate_second_order(input, label, model, criterion, estimate
     
     return lr
 
-def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level_noise=0):
+def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level_noise=0, num_drop=0, config=None):
     def calc_r_by_gnum(N, d):
         equation = np.poly1d([1] + [0 for _ in range(N-1)] + [-d, d-1], False)
         roots = np.roots(equation)
@@ -387,20 +456,27 @@ def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level
 
     all_gradients = torch.cat([grad.flatten() for grad in estimated_gradient.values()]).abs()
     all_gradients = torch.sort(all_gradients + torch.normal(0, level_noise, size=all_gradients.size(), device=all_gradients.device), descending=True).values
+    if num_drop > 0:
+        all_gradients = all_gradients[:-num_drop]
     num_params = all_gradients.size(0)
 
     # Calculate r
     r = calc_r_by_gnum(num_groups, num_params)
+    if config is not None:
+        config['r'] = r
 
     # Find milestones
+    if config is not None: config['milestone_indices'] = []
     milestones = []
     group_sizes = []
     group_size = 1
     group_start_idx = 0
     for group_idx in range(num_groups):
         milestones.append(all_gradients[group_start_idx])
-        group_start_idx += math.floor(group_size)
-        group_sizes.append(math.floor(group_size))
+        now_group_size = math.floor(group_size)
+        group_start_idx += now_group_size
+        group_sizes.append(now_group_size)
+        if config is not None: config['milestone_indices'].append(group_start_idx)
         group_size *= r
     # WARNING: it sometimes makes empty group. should be fixed
     
@@ -409,7 +485,7 @@ def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level
     # Group the parameters
     group_dict = {}
     for name, grad in estimated_gradient.items():
-        group_dict[name] = torch.zeros_like(grad)
+        group_dict[name] = -torch.ones_like(grad)
         for i, milestone in enumerate(milestones[::-1]):
             group_idx = num_groups - i - 1
             if descending:
@@ -418,3 +494,16 @@ def group_by_gradient_exp(estimated_gradient, num_groups, descending=True, level
                 group_dict[name][grad.abs() <= milestone] = group_idx
 
     return group_dict, group_sizes
+
+def drop_momentum_by_score(score_dict, momentum_dict, num_drop, abs=True):
+    all_params = torch.cat([param.abs().flatten() for param in score_dict.values()])
+    if abs:
+        all_params = all_params.abs()
+    all_params = torch.sort(all_params, descending=False).values
+    drop_threshold = all_params[num_drop]
+
+    for name, param in score_dict.items():
+        mask = param.abs() < drop_threshold
+        momentum_dict[name][mask] = 0
+
+    return momentum_dict
