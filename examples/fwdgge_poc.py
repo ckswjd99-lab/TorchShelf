@@ -100,10 +100,24 @@ def group_by_given_logr(estimated_gradient, logr, descending=True):
 
 def train_zo(
         train_loader, model, criterion, optimizer, epoch,
-        smoothing=1e-3, query=1, lr_auto=True, lr_max=1e-2, lr_min=1e-5, momentum=0.9,
-        num_groups=1, group_dict=None, group_sizes=None, momentum_dict=None, decay_rate=None, r_per_decay=500, level_noise=0, warmup=False, num_drop=0,
+        query=1, 
+        num_groups=1, group_dict=None, group_sizes=None, momentum_dict=None, decay_rate=None,
         config=None, verbose=True
     ):
+    # if epoch == 0:
+    #     config['num_query'] = 0
+    #     config['group_dict'] = group_dict
+    #     config['group_sizes'] = group_sizes
+    #     config['cosine_similarity'] = 0
+    #     config['magnitude_ratio'] = 0
+    #     config['mse'] = 0
+    #     config['momentum_dict'] = {}
+    #     config['num_bp'] = 0
+    #     config['group_diff'] = 0
+    #     config['group_avg'] = 0
+    #     return 0, 0
+
+    
     model.eval()
 
     estimated_gradient = None
@@ -171,14 +185,15 @@ def train_zo(
 
         optimizer.zero_grad()
 
-        num_iter = 10
+        num_iter = 60
         itgge_num_groups = num_groups//num_iter
 
         # Gradient estimation
         real_gradient = gradient_fo(input, label, model, criterion)
+        # rand_gradient = {k: torch.randn_like(v) for k, v in real_gradient.items()}
         estimated_gradient = gradient_fwd(
             input, label, model, criterion,
-            query=num_iter, type='itgge', momentum_dict=estimated_gradient, num_groups=itgge_num_groups,
+            query=num_iter, type='itgge', momentum_dict=gradient_momentum, num_groups=itgge_num_groups,
             cheat_fo=True
         )
         num_query += query * num_groups
@@ -299,12 +314,15 @@ print()
 
 ### OTHERS ###
 
-# EPOCHS = 2000
-EPOCHS = 20000
+EPOCHS = 2000
 
 criterion = nn.CrossEntropyLoss()
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, eps=1e-8, betas=(0.5, 0.5))
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, EPOCHS)
+scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=(1e-3)**(1/EPOCHS))
+
+if start_epoch > 0:
+    for _ in range(start_epoch):
+        scheduler.step()
 
 print(optimizer)
 print(scheduler)
@@ -322,8 +340,6 @@ decay_rate = None
 lr_max = LR_MAX
 lr = optimizer.param_groups[0]['lr']
 
-level_noise = lr * 1e-2
-
 for epoch in range(start_epoch, start_epoch + EPOCHS):
     start_time = time.time()
 
@@ -331,28 +347,26 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
 
     train_acc, train_loss = train_zo(
         train_loader, model, criterion, optimizer, epoch,
-        query=NUM_QUERY, lr_auto=False, lr_max=lr, lr_min=lr, momentum=MOMENTUM,
-        num_groups=num_groups, group_dict=group_dict, group_sizes=group_sizes, momentum_dict=momentum_dict, decay_rate=decay_rate, level_noise=level_noise,
+        query=NUM_QUERY,
+        num_groups=num_groups, group_dict=group_dict, group_sizes=group_sizes, momentum_dict=momentum_dict, decay_rate=decay_rate,
         config=config, verbose=True
     )
     # train_acc, train_loss = train(train_loader, model, nn.CrossEntropyLoss(), optimizer, epoch)
 
     val_acc, val_loss = validate(val_loader, model, criterion, epoch)
 
-    group_dict = config['group_dict']
-    group_sizes = config['group_sizes']
-    momentum_dict = config['momentum_dict']
+    # group_dict = config['group_dict']
+    # group_sizes = config['group_sizes']
+    # momentum_dict = config['momentum_dict']
     num_bp = config['num_bp']
-    group_diff = config['group_diff']
+    # group_diff = config['group_diff']
     lr = optimizer.param_groups[0]['lr']
-    level_noise = lr * 1e-2
 
     print(
         f"Epoch {epoch+1:3d}/{start_epoch + EPOCHS}, "
-        f"LR: {lr:.4e},"
+        f"LR: {lr:.4e}, "
         f"Cosine Sim: {config['cosine_similarity']:.4f}, "
         f"Magnitude Ratio: {config['magnitude_ratio']:.4f}, "
-        f"Level Noise: {level_noise:.4e} | "
         f"Train Acc: {train_acc * 100:.2f}%, "
         f"Train Loss: {train_loss:.4f}, "
         f"Val Acc: {val_acc*100:.2f}%, "
@@ -362,8 +376,8 @@ for epoch in range(start_epoch, start_epoch + EPOCHS):
         f"Time: {time.time() - start_time:.3f}s"
     )
 
-    # scheduler.step()
-    if epoch % 100 == 0:
+    scheduler.step()
+    if epoch % 10 == 0:
         # torch.save(model.state_dict(), f"./saves/fwdgge_poc_e{epoch+1:03d}.pth")
         torch.save(model.state_dict(), f"./saves/fwdgge_tinyvit_e{epoch+1:05d}.pth")
 

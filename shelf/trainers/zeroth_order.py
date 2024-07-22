@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from tqdm import tqdm
 import numpy as np
@@ -7,6 +8,11 @@ import math
 
 from functools import partial
 import torch.func as fc
+
+
+def functional_xent(params, buffers, names, model, x, t):
+    y = fc.functional_call(model, ({k: v for k, v in zip(names, params)}, buffers), (x,))
+    return F.cross_entropy(y, t)
 
 def train_zo(
     train_loader, model, criterion, optimizer, epoch,
@@ -218,6 +224,137 @@ def gradient_estimate_coordwise(input, label, model, criterion, smoothing):
 
     return averaged_gradient
 
+calc_r_by_gnum_cache = {}
+def calc_r_by_gnum(N, d):
+    global calc_r_by_gnum_cache
+
+    if N not in calc_r_by_gnum_cache:
+        calc_r_by_gnum_cache[N] = {}
+
+    if d in calc_r_by_gnum_cache[N]:
+        return calc_r_by_gnum_cache[N][d]
+
+    equation = np.poly1d([1] + [0 for _ in range(N-1)] + [-d, d-1], False)
+    roots = np.roots(equation)
+    roots = roots[np.isreal(roots)]
+    r = np.real(np.max(roots))
+
+    calc_r_by_gnum_cache[N][d] = r
+
+    if r <= 1:
+        raise ValueError("r must be greater than 1")
+
+    return r
+
+def cossim_dict(a, b):
+    a_flat = torch.cat([ p.view(-1) for p in a.values() ])
+    b_flat = torch.cat([ p.view(-1) for p in b.values() ])
+
+    return F.cosine_similarity(a_flat, b_flat, dim=0)
+
+@torch.no_grad()
+def gradient_estimate_pwitgge(input, label, model, criterion, smoothing=1e-3, pruning_rate=0.9, real_gradient=None, init_momentum=None, layerwise_pruning_ratio=None, config=None):
+
+    param_names = [ name for name, _ in model.named_parameters() ]
+    param_list = [ p for p in model.parameters() ]
+
+    total_query = 0
+    original_loss = criterion(model(input), label)
+
+    estimated_gradient = {
+        name: torch.zeros_like(param)
+        for name, param in model.named_parameters()
+    }
+
+    for pname, param in zip(param_names, param_list):
+        param_size = param.numel()
+        if layerwise_pruning_ratio is not None:
+            if 'weight' in pname:
+                num_queries = (1 - layerwise_pruning_ratio[pname.split('.weight')[0]]) * param_size
+            else:
+                num_queries = param_size * (1 - pruning_rate)
+        else:
+            num_queries = param_size * (1 - pruning_rate)
+        num_groups = max(int(math.sqrt(num_queries)), 2)
+        num_iters = max(int(num_queries // num_groups), 1)
+
+        r = calc_r_by_gnum(num_groups, param_size)
+
+        total_query += num_groups * num_iters
+
+        if init_momentum is not None:
+            iter_estimate = init_momentum[pname]
+        else:
+            iter_estimate = torch.randn_like(param) * smoothing
+        # iter_estimate = torch.exp(-grasp_score_dict[pname])
+        
+        iter_grouping = torch.zeros_like(param)
+
+        real_pgrad_flat = real_gradient[pname].view(-1)
+
+        for iter_idx in range(num_iters):
+            # sorted estimated gradient
+            iter_estimate_abs = (iter_estimate.view(-1)).abs()
+            iter_estimate_sorted = torch.sort(iter_estimate_abs, descending=True).values
+
+            # group using estimated gradient
+            milestones = []
+            group_sizes = []
+            group_size = 1
+            group_start_idx = 0
+            for group_idx in range(num_groups):
+                milestones.append(iter_estimate_sorted[group_start_idx])
+                now_group_size = math.floor(group_size)
+                group_start_idx += now_group_size
+                group_sizes.append(now_group_size)
+                group_size *= r
+            
+            milestones[-1] = iter_estimate_sorted[-1]
+
+            # group idx buffer
+            for i, milestone in enumerate(milestones[::-1]):
+                group_idx = num_groups - i - 1
+                iter_grouping[iter_estimate >= milestone] = group_idx
+            
+            # estimate and update
+            iter_estimate = torch.zeros_like(param)
+            perturbing_noise = torch.randn_like(param) * smoothing
+
+            gpnoises = [ perturbing_noise * (iter_grouping == group_idx).float() for group_idx in range(num_groups) ]
+            gpnoises = [ gpnoise.view(-1) for gpnoise in gpnoises ]
+            gpnoises_mat = torch.stack(gpnoises, dim=0)
+            jvp_values = gpnoises_mat @ real_pgrad_flat
+            iter_estimate = jvp_values @ gpnoises_mat
+            iter_estimate = iter_estimate.view(param.size())
+
+            # estimated_gradient[pname] = iter_estimate
+
+            # for group_idx in range(num_groups):
+                # param.data += mask * perturbing_noise
+                
+                # perturbed_loss_pos = criterion(model(input), label)
+
+                # param.data -= 2 * mask * perturbing_noise
+
+                # perturbed_loss_neg = criterion(model(input), label)
+
+                # param.data += mask * perturbing_noise
+
+                # iter_estimate += (perturbed_loss_pos - perturbed_loss_neg) / (2 * smoothing) * mask * perturbing_noise
+            
+            estimated_gradient[pname] = estimated_gradient[pname] * (1-1/num_iters) + iter_estimate * (1/num_iters)
+            
+        # print(f"Gradient for {param_size:6d} with {num_groups:5d} groups X {num_iter} iters: Cossim {F.cosine_similarity(real_gradient[pname].view(-1), estimated_gradient[pname].view(-1), dim=0)}")
+    if config is not None:
+        config['cossim'] = cossim_dict(real_gradient, estimated_gradient)
+        config['total_query'] = total_query
+    
+    # print(f"Total query is {total_query}")
+    # print(f"Total cosine similarity is {cossim_dict(real_gradient, estimated_gradient)}")
+    # print("")
+    
+    return estimated_gradient
+
 
 @torch.no_grad()
 def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge', **kwargs):
@@ -371,7 +508,7 @@ def gradient_fwd(input, label, model, criterion_functional, query=1, type='rge',
 
     return estimated_grads
 
-
+@torch.enable_grad()
 def gradient_fo(input, label, model, criterion):
     model.train()
     gradient = {}
@@ -381,8 +518,9 @@ def gradient_fo(input, label, model, criterion):
     loss.backward()
 
     for name, param in model.named_parameters():
-        gradient[name] = param.grad.clone()
-        param.grad.zero_()
+        if param.grad is not None:
+            gradient[name] = param.grad.clone()
+            param.grad.zero_()
     
     return gradient
 

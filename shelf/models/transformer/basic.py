@@ -44,7 +44,10 @@ class Attention(nn.Module):
         self.scale = dim_head ** -0.5
 
         self.attend = nn.Softmax(dim = -1)
-        self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        # self.to_qkv = nn.Linear(dim, inner_dim * 3, bias = False)
+        self.W_Q = nn.Linear(dim, inner_dim, bias = False)
+        self.W_K = nn.Linear(dim, inner_dim, bias = False)
+        self.W_V = nn.Linear(dim, inner_dim, bias = False)
 
         self.to_out = nn.Sequential(
             nn.Linear(inner_dim, dim),
@@ -52,8 +55,11 @@ class Attention(nn.Module):
         ) if project_out else nn.Identity()
 
     def forward(self, x):
-        qkv = self.to_qkv(x).chunk(3, dim = -1)
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
+        # qkv = self.to_qkv(x).chunk(3, dim = -1)
+        # q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = self.heads), qkv)
+        q = self.W_Q(x).reshape(x.shape[0], x.shape[1], self.heads, -1).permute(0, 2, 1, 3)
+        k = self.W_K(x).reshape(x.shape[0], x.shape[1], self.heads, -1).permute(0, 2, 1, 3)
+        v = self.W_V(x).reshape(x.shape[0], x.shape[1], self.heads, -1).permute(0, 2, 1, 3)
 
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
 
