@@ -27,12 +27,15 @@ for name, module in model.named_modules():
     if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
         prune.l1_unstructured(module, name='weight', amount=0.0)
 
-if os.path.exists("./saves/nprune_package.pt"):
+if os.path.exists(f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt"):
     nprune_package = torch.load("./saves/nprune_package.pt")
+    model.load_state_dict(nprune_package['model_initial_state'])
     nprune_num_groups = nprune_package['nprune_num_groups']
     nprune_group_dict = nprune_package['nprune_group_dict']
     nprune_dimension_dict = nprune_package['nprune_dimension_dict']
 else:
+    model_initial_state = model.state_dict()
+
     nprune_num_groups = {
         pname: int((1-PRUNE_RATE) * param.numel())
         for pname, param in model.named_parameters() 
@@ -59,12 +62,13 @@ else:
             dimension[nprune_group_dict[pname] == group_idx] /= dimension[nprune_group_dict[pname] == group_idx].view(-1).norm()
 
     nprune_package = {
+        "model_initial_state": model_initial_state,
         "nprune_num_groups": nprune_num_groups,
         "nprune_group_dict": nprune_group_dict,
         "nprune_dimension_dict": nprune_dimension_dict
     }
 
-    torch.save(nprune_package, "./saves/nprune_package.pt")
+    torch.save(nprune_package, f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt")
 
 num_alives = 0
 
