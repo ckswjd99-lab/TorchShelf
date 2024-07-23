@@ -15,7 +15,7 @@ EPOCHS = 100
 DEVICE = 'cuda'
 PRUNE_RATE = 0.9
 
-train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=True)
+train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=False)
 
 model = resnet20().to(DEVICE)
 criterion = nn.CrossEntropyLoss().to(DEVICE)
@@ -85,6 +85,7 @@ for epoch in range(EPOCHS):
     train_acc_sum = 0
     train_loss_sum = 0
     
+    model.train()
     pbar = tqdm(enumerate(train_loader), total=len(train_loader), leave=False)
     for i, (inputs, targets) in pbar:
         inputs, targets = inputs.to(DEVICE), targets.to(DEVICE)
@@ -108,13 +109,6 @@ for epoch in range(EPOCHS):
 
                 pgrad = pgrad_dimmed.view(param.shape)
                 param.grad = pgrad
-
-                # for group_idx in range(nprune_num_groups[pname]):
-                #     group_dim = group_dims[group_idx]
-                #     group_dim_flat = group_dim.view(-1)
-
-                #     jvp_value = torch.dot(pgrad_flat, group_dim_flat)
-                #     param.grad += jvp_value * group_dim
 
         optimizer.step()
         

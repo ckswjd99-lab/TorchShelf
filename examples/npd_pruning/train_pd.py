@@ -13,7 +13,7 @@ EPOCHS = 100
 DEVICE = 'cuda'
 PRUNE_RATE = 0.9
 
-train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=True)
+train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=False)
 
 model = resnet20().to(DEVICE)
 criterion = nn.CrossEntropyLoss().to(DEVICE)
