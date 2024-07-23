@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 
 from torch.nn.utils.prune import remove, l1_unstructured
 from tqdm import tqdm
-import torchsummary
+import os
 
 from models import ResNet9, ResNet20
 
@@ -23,12 +23,12 @@ EPOCHS = 100
 DEVICE = 'cuda'
 
 
-train_loader, val_loader = get_CIFAR10_dataset()
+train_loader, val_loader = get_CIFAR10_dataset(augmentation=True)
 
 model = ResNet9().to(DEVICE)
 # model = ResNet20().to(DEVICE)
 
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss().to(DEVICE)
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-3, weight_decay=1e-5)
 
 num_params = sum(p.numel() for p in model.parameters())
@@ -112,12 +112,13 @@ def train(train_loader, model, criterion, optimizer, epoch, config, epoch_pbar=N
 
 
 pruning_schedule = {
-    # linear decrease from 0.99 to 0.00
-    epoch: 0.99 - epoch * 0.99 / EPOCHS for epoch in range(EPOCHS)
+    # epoch 0~100: 0.99 -> 0.00
+    epoch: 0.99 - epoch * 0.99 / EPOCHS
+    for epoch in range(EPOCHS)
 }
 pruning_score_dict = get_random_score(model)
-# pruning_score_dict = get_zo_grasp_score(train_loader, model)
-# pruning_score_dict = {k: -v.to(DEVICE) for k, v in pruning_score_dict.items()}
+# save score dict
+torch.save(pruning_score_dict, './saves/pruning_score_dict.pth')
 
 prune_model_with_score(model, 1.0, pruning_score_dict)
 prev_pruning_mask = extract_pruning_mask(model)
@@ -127,9 +128,11 @@ init_values = {pname: param.clone() for pname, param in model.named_parameters()
 undo_pruning(model)
 
 # Train the model
+best_val_acc = 0
+
 for epoch in range(EPOCHS):
     # prune the model
-    pruning_rate = pruning_schedule[epoch] if epoch <= 50 else 0
+    pruning_rate = pruning_schedule[epoch]
     prune_model_with_score(model, pruning_rate, pruning_score_dict)
     now_pruning_mask = extract_pruning_mask(model)
     only_now_pruning_mask = {pname: now_pruning_mask[pname] - prev_pruning_mask[pname] for pname in now_pruning_mask}
@@ -154,4 +157,28 @@ for epoch in range(EPOCHS):
     for param in model.parameters():
         alive_params += torch.sum(param != 0).item()
 
+    is_best = val_acc > best_val_acc
+    if is_best:
+        best_val_acc = val_acc
+        torch.save(model.state_dict(), './saves/best_model.pth')
+
     print(f"Epoch {epoch+1:3d}/{EPOCHS:3d} | T LOSS: {train_loss:.4f}, T ACC: {train_acc*100:.2f}%, V LOSS: {val_loss:.4f}, V ACC: {val_acc*100:.2f}% | PARAM {int(alive_params):10,d} ({alive_params/num_params*100:.4f}%)")
+
+print(f"Best validation accuracy: {best_val_acc*100:.2f}%")
+
+os.rename('./saves/best_model.pth', f'./saves/best_model_grow_fo_vacc{best_val_acc*100:.2f}.pth')
+
+# evaluate the pruning rate
+pruning_rates = [0.99, 0.98, 0.95, 0.9, 0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+pruning_scores = []
+
+for pruning_rate in pruning_rates:
+    model.load_state_dict(torch.load(f'./saves/best_model_grow_fo_vacc{best_val_acc*100:.2f}.pth'))
+
+    prune_model_with_score(model, pruning_rate, pruning_score_dict)
+    val_acc, _ = validate(val_loader, model, criterion, 0)
+    pruning_scores.append(val_acc)
+    remove_pruning(model)
+
+print(pruning_rates)
+print(pruning_scores)
