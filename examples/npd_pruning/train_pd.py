@@ -9,7 +9,7 @@ from shelf.trainers.classic import train, validate
 from shelf.models.resnet.etc import resnet20
 
 
-EPOCHS = 100
+EPOCHS = 200
 DEVICE = 'cuda'
 PRUNE_RATE = 0.9
 
@@ -18,6 +18,7 @@ train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=Fals
 model = resnet20().to(DEVICE)
 criterion = nn.CrossEntropyLoss().to(DEVICE)
 optimizer = torch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=1e-4, momentum=0.9)
+scheudler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
 
 num_params = sum(p.numel() for p in model.parameters())
 
@@ -44,6 +45,8 @@ for epoch in range(EPOCHS):
         best_val_acc = val_acc
 
     print(f"Epoch {epoch+1:3d}/{EPOCHS:3d} | T LOSS: {train_loss:.4f}, T ACC: {train_acc*100:.2f}%, V LOSS: {val_loss:.4f}, V ACC: {val_acc*100:.2f}% |" + (" *" if is_best else ""))
+
+    scheudler.step()
 
 
 print(f"Best validation accuracy: {best_val_acc*100:.2f}%")

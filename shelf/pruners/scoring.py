@@ -24,9 +24,9 @@ def vthvp(f, primals, tangents):
 
 @torch.no_grad()
 def get_grasp_score(input, label, model, criterion=functional_xent):
-    names = list(model.state_dict().keys())
+    names = list(dict(model.named_parameters()).keys())
     params = list(model.parameters())
-    buffers = {}
+    buffers = dict(model.named_buffers())
 
     get_loss_with_params = partial(criterion, buffers=buffers, names=names, model=model, x=input, t=label)
 
@@ -39,10 +39,26 @@ def get_grasp_score(input, label, model, criterion=functional_xent):
     return grasp_score
 
 @torch.no_grad()
-def get_grasp_score_dict(dataloader, model, criterion=functional_xent):
-    names = list(model.state_dict().keys())
+def get_hvp_score(input, label, model, criterion=functional_xent):
+    names = list(dict(model.named_parameters()).keys())
     params = list(model.parameters())
-    buffers = {}
+    buffers = dict(model.named_buffers())
+
+    get_loss_with_params = partial(criterion, buffers=buffers, names=names, model=model, x=input, t=label)
+
+    tangent = grad(get_loss_with_params)(params)
+
+    hvp_value = hvp(get_loss_with_params, (params,), (tangent,))
+
+    score = [hg for hg in hvp_value]
+
+    return score
+
+@torch.no_grad()
+def get_grasp_score_dict(dataloader, model, criterion=functional_xent):
+    names = list(dict(model.named_parameters()).keys())
+    params = list(model.parameters())
+    buffers = dict(model.named_buffers())
 
     grasp_score_dict = {pname: torch.zeros_like(param) for pname, param in model.named_parameters()}
 
@@ -61,6 +77,20 @@ def get_grasp_score_dict(dataloader, model, criterion=functional_xent):
         grasp_score_dict[score] /= num_steps
 
     return grasp_score_dict
+
+@torch.no_grad()
+def get_abs_gradient_score(input, label, model, criterion=functional_xent):
+    names = list(dict(model.named_parameters()).keys())
+    params = list(model.parameters())
+    buffers = dict(model.named_buffers())
+
+    get_loss_with_params = partial(criterion, buffers=buffers, names=names, model=model, x=input, t=label)
+
+    gradient = grad(get_loss_with_params)(params)
+
+    score = [torch.abs(grad) for grad in gradient]
+
+    return score
 
 @torch.no_grad()
 def get_fwd_grasp_score(input, label, model, tangent, criterion=functional_xent):

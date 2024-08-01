@@ -9,6 +9,7 @@ from import_shelf import shelf
 from shelf.dataloaders.cifar import get_CIFAR10_dataset
 from shelf.trainers.classic import train, validate
 from shelf.models.resnet.etc import resnet20
+from shelf.pruners.scoring import get_grasp_score, get_hvp_score
 
 
 EPOCHS = 200
@@ -18,10 +19,10 @@ PRUNE_RATE = 0.9
 train_loader, val_loader = get_CIFAR10_dataset(root='../data', augmentation=False)
 
 model = resnet20().to(DEVICE)
+model.eval()
 criterion = nn.CrossEntropyLoss().to(DEVICE)
 optimizer = torch.optim.SGD(model.parameters(), lr=1e-1, weight_decay=1e-4, momentum=0.9)
-# scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
-scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[20, 50], gamma=0.1)
+scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[100, 150], gamma=0.1)
 
 num_params = sum(p.numel() for p in model.parameters())
 
@@ -29,19 +30,17 @@ for name, module in model.named_modules():
     if isinstance(module, nn.Conv2d) or isinstance(module, nn.Linear):
         prune.l1_unstructured(module, name='weight', amount=0.0)
 
-# if os.path.exists(f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt"):
-if os.path.exists(f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt") and False:
-    nprune_package = torch.load(f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt")
+if os.path.exists(f"./saves/gnprune_package_{PRUNE_RATE:.2f}.pt"):
+    nprune_package = torch.load(f"./saves/gnprune_package_{PRUNE_RATE:.2f}.pt")
     model.load_state_dict(nprune_package['model_initial_state'])
-    nprune_num_groups = nprune_package['nprune_num_groups']
-    nprune_group_dict = nprune_package['nprune_group_dict']
-    nprune_dimension_dict = nprune_package['nprune_dimension_dict']
+    nprune_num_groups = nprune_package['gnprune_num_groups']
+    nprune_group_dict = nprune_package['gnprune_group_dict']
+    nprune_dimension_dict = nprune_package['gnprune_dimension_dict']
 else:
     model_initial_state = model.state_dict()
 
     nprune_num_groups = {
-        # pname: int((1-PRUNE_RATE) * param.numel())
-        pname: 1
+        pname: int((1-PRUNE_RATE) * param.numel())
         for pname, param in model.named_parameters() 
         if 'weight_orig' in pname
     }
@@ -52,8 +51,27 @@ else:
         if 'weight_orig' in pname
     }
 
+    grasp_score_dict = {pname: torch.zeros_like(param) for pname, param in model.named_parameters()}
+    for input, label in tqdm(train_loader, leave=False):
+        input, label = input.to(DEVICE), label.to(DEVICE)
+
+        grasp_score = get_hvp_score(input, label, model)
+        for pname, value in zip(dict(model.named_parameters()).keys(), grasp_score):
+            grasp_score_dict[pname] += value
+    
+    params_flat = torch.cat([param.view(-1) for param in model.parameters()])
+    params_norm = torch.norm(params_flat, p=2)
+
+    grasp_score_flat = torch.cat([param.view(-1) for param in grasp_score_dict.values()])
+    grasp_score_norm = torch.norm(grasp_score_flat, p=2)
+
+    ideal_dimension_dict = {
+        pname: params_norm * grasp_score + grasp_score_norm * param
+        for (pname, param), grasp_score in zip(model.named_parameters(), grasp_score_dict.values())
+    }
+
     nprune_dimension_dict = {
-        pname: torch.randn_like(param)
+        pname: ideal_dimension_dict[pname]
         for pname, param in model.named_parameters()
         if 'weight_orig' in pname
     }
@@ -67,12 +85,12 @@ else:
 
     nprune_package = {
         "model_initial_state": model_initial_state,
-        "nprune_num_groups": nprune_num_groups,
-        "nprune_group_dict": nprune_group_dict,
-        "nprune_dimension_dict": nprune_dimension_dict
+        "gnprune_num_groups": nprune_num_groups,
+        "gnprune_group_dict": nprune_group_dict,
+        "gnprune_dimension_dict": nprune_dimension_dict
     }
 
-    # torch.save(nprune_package, f"./saves/nprune_package_{PRUNE_RATE:.2f}.pt")
+    torch.save(nprune_package, f"./saves/gnprune_package_{PRUNE_RATE:.2f}.pt")
 
 num_alives = 0
 
@@ -86,6 +104,8 @@ print(f"Number of alive parameters: {num_alives}/{num_params} ({num_alives / num
 
 
 # Train the model
+model.train()
+
 best_val_acc = 0
 
 for epoch in range(EPOCHS):
