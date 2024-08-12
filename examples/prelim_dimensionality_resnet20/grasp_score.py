@@ -10,7 +10,7 @@ from import_shelf import shelf
 from shelf.dataloaders.cifar import get_CIFAR10_dataset
 from shelf.trainers.classic import train, validate
 from shelf.models.mlp_mixer import MLPMixer
-from shelf.pruners.scoring import get_grasp_score, get_hvp_score
+from shelf.pruners.scoring import get_grasp_score, get_hgp_score
 
 DEVICE = 'cuda'
 SMOOTHING = 1e-3
@@ -58,7 +58,7 @@ hg_value_sum = {pname: torch.zeros_like(param) for pname, param in model_init.na
 for input, label in tqdm(train_loader, leave=False):
     input, label = input.to(DEVICE), label.to(DEVICE)
 
-    hg_value = get_hvp_score(input, label, model_init)
+    hg_value = get_hgp_score(input, label, model_init)
     for pname, value in zip(model_init.state_dict().keys(), hg_value):
         hg_value_sum[pname] += value
 

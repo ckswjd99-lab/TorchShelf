@@ -7,18 +7,18 @@ import math
 from import_shelf import shelf
 from shelf.dataloaders.cifar import get_CIFAR10_dataset
 from shelf.trainers.classic import train, validate
-from shelf.models.mlp_mixer import MLPMixer
+from shelf.models.resnet.etc import resnet20
 
 DEVICE = 'cuda'
 FIG_FOLDER = './logs/cossim/'
 
-model_paths = [f'./saves/set1_default/epoch_{i}.pth' for i in range(1, 100)]
-initial_weight_path = './saves/set1_default/initial_weights.pth'
-final_weight_path = './saves/set1_default/epoch_100.pth'
+model_paths = [f'./saves/epoch_{i}.pth' for i in range(1, 100)]
+initial_weight_path = './saves/initial_weights.pth'
+final_weight_path = './saves/epoch_100.pth'
 
-models = [MLPMixer().to(DEVICE) for _ in model_paths]
-initial_model = MLPMixer().to(DEVICE)
-final_model = MLPMixer().to(DEVICE)
+models = [resnet20().to(DEVICE) for _ in model_paths]
+initial_model = resnet20().to(DEVICE)
+final_model = resnet20().to(DEVICE)
 
 for model, model_path in zip(models, model_paths):
     model.load_state_dict(torch.load(model_path))

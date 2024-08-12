@@ -10,7 +10,7 @@ from shelf.dataloaders.cifar import get_CIFAR10_dataset
 from shelf.trainers.classic import train, validate
 from shelf.trainers.zeroth_order import gradient_fo
 from shelf.models.resnet.etc import resnet20
-from shelf.pruners.scoring import get_hvp_score, get_hvp_score, get_abs_gradient_score
+from shelf.pruners.scoring import get_hgp_score, get_hgp_score, get_abs_gradient_score
 
 
 EPOCHS = 200
@@ -68,7 +68,7 @@ hgp_score_dict = {pname: torch.zeros_like(param) for pname, param in model.named
 for input, label in tqdm(train_loader, leave=False):
     input, label = input.to(DEVICE), label.to(DEVICE)
 
-    hvp_score = get_hvp_score(input, label, model)
+    hvp_score = get_hgp_score(input, label, model)
     for pname, value in zip(dict(model.named_parameters()).keys(), hvp_score):
         hgp_score_dict[pname] += value
     
